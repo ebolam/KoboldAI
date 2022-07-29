@@ -307,6 +307,20 @@ gensettingstf = [
     "name": "nogenmod"
 	},
     {
+ 	"uitype": "toggle",
+ 	"unit": "bool",
+ 	"label": "Token Streaming",
+ 	"id": "setoutputstreaming",
+ 	"min": 0,
+ 	"max": 1,
+ 	"step": 1,
+ 	"default": 0,
+	"tooltip": "Shows outputs to you as they are made.",
+    "menu_path": "User",
+    "classname": "user",
+    "name": "output_streaming"
+ 	},
+    {
 	"uitype": "toggle",
 	"unit": "bool",
 	"label": "Debug",

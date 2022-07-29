@@ -46,13 +46,11 @@
 			<div class="statusbar_outer hidden">
 				<div class="statusbar_inner" style="width:0%">0%</div>
 			</div><br>
-			<button type="button" class="btn action_button submit var_sync_alt_system_aibusy" system_aibusy=False id="btnsend" 
-				onclick="socket.emit('submit', {'data': document.getElementById('input_text').value});document.getElementById('input_text').value = '';"
-				>Submit</button>
+			<button type="button" class="btn action_button submit var_sync_alt_system_aibusy" system_aibusy=False id="btnsend" onclick="do_submit();">Submit</button>
 			<button type="button" class="btn action_button submited var_sync_alt_system_aibusy"  system_aibusy=False id="btnsend"><img src="static/thinking.gif" class="force_center"></button>
-			<button type="button" class="btn action_button back" onclick="socket.emit('back', {});"><span class="oi" data-glyph="action-undo"></span></button>
-			<button type="button" class="btn action_button redo" onclick="socket.emit('redo', {});"><span class="oi" data-glyph="action-redo"></span></button>
-			<button type="button" class="btn action_button retry" onclick="socket.emit('retry', {});"><span class="oi" data-glyph="loop-circular"></span></button>
+			<button type="button" class="btn action_button back" onclick="do_back();"><span class="oi" data-glyph="action-undo"></span></button>
+			<button type="button" class="btn action_button redo" onclick="do_redo();"><span class="oi" data-glyph="action-redo"></span></button>
+			<button type="button" class="btn action_button retry" onclick="do_retry();"><span class="oi" data-glyph="loop-circular"></span></button>
 		</div>
 		<!------------ Right Menu Icon--------------------->
 		<span class="oi right_menu_icon" data-glyph="chevron-left" onclick="toggle_flyout_right(this)"></span>

@@ -413,6 +413,7 @@ class user_settings(settings):
         self.rngpersist  = False
         self.nogenmod    = False
         self.debug       = False    # If set to true, will send debug information to the client for display
+        self.output_streaming = False
         
         
     def __setattr__(self, name, value):
@@ -810,6 +811,9 @@ class KoboldStoryRegister(object):
             for key in self.actions:
                 self.actions[key]['Selected Text Length'] = None
     
+    def stream_token(self, token, batch):
+        process_variable_changes(self.socketio, "actions", "Streamed Token", {"token": token, "batch": batch}, None)
+
     def __setattr__(self, name, value):
         new_variable = name not in self.__dict__
         old_value = getattr(self, name, None)

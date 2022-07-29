@@ -20,14 +20,15 @@ socket.on('error_popup', function(data){error_popup(data);});
 //socket.onAny(function(event_name, data) {console.log({"event": event_name, "class": data.classname, "data": data});});
 
 var backend_vars = {};
-var presets = {}
+var presets = {};
 var current_chunk_number = null;
 var ai_busy_start = Date.now();
 var popup_deleteable = false;
 var popup_editable = false;
 var popup_renameable = false;
 var shift_down = false;
-var world_info_data = {}
+var world_info_data = {};
+var allow_stream = false;
 //-----------------------------------Server to UI  Functions-----------------------------------------------
 function connect() {
 	console.log("connected");
@@ -68,15 +69,25 @@ function fix_text(val) {
 }
 
 function create_options(data) {
+	for (const option of data.value.options) {
+		// If we have any new options, we have been sent the final ones. We
+		// should now clear the streams.
+		if (!option["Previous Selection"]) {
+			eliminate_streams();
+			break;
+		}
+	}
+
 	//Set all options before the next chunk to hidden
 	var option_container = document.getElementById("Select Options");
 	var current_chunk = parseInt(document.getElementById("action_count").textContent)+1;
 	var children = option_container.children;
 	for (var i = 0; i < children.length; i++) {
 		var chunk = children[i];
+		// Never hide the stream chunk, we will delete it when we need to.
 		if (chunk.id == "Select Options Chunk " + current_chunk) {
 			chunk.classList.remove("hidden");
-		} else {
+		} else if (chunk.id !== "Stream Chunk") {
 			chunk.classList.add("hidden");
 		}
 	}
@@ -166,6 +177,109 @@ function create_options(data) {
 	
 	//make sure our last updated chunk is in view
 	document.getElementById('Selected Text Chunk '+current_chunk_number).scrollIntoView();
+}
+
+function show_streamed_token(data) {
+	// Sometimes the server sends the final tokens after we are done displaying
+	// the full text. This causes stray words to be dangling about, so we block
+	// tokens from being shown when we don't expect them.
+	if (!allow_stream) return;
+
+	if (document.getElementById("Stream Chunk")) {
+		// Batched; we should show the tokens in the previews.
+		const textCell = document.getElementById(`stream_batch_${data.value.batch}`);
+		textCell.textContent += data.value.token;
+	} else {
+		// Put tokens directly in text area
+		let streamId = `Stream Preview ${data.value.batch}`;
+
+		// Look for the stream element. If we are in the middle of streaming, it
+		// will likely exist. If we are just starting the stream, it will not.
+		let span = document.getElementById(streamId);
+
+		if (!span) {
+			let story_area = document.getElementById("Selected Text");
+			span = document.createElement("span");
+			span.id = streamId;
+			span.classList.add("stream_preview")
+			span.classList.add("rawtext")
+			span.classList.add("within_max_length")
+			story_area.appendChild(span);
+		}
+
+		span.textContent += data.value.token;
+		span.scrollIntoView();
+	}
+}
+
+function eliminate_streams() {
+	const streamChunk = document.getElementById("Stream Chunk");
+
+	allow_stream = false;
+
+	for (const streamElement of document.getElementsByClassName("stream_preview")) {
+		streamElement.remove();
+	}
+
+	if (streamChunk) {
+		streamChunk.remove();
+	}
+}
+
+function begin_stream() {
+	const batchCount = parseInt(document.getElementById("model_numseqs").value);
+	const streamCheckbox = document.getElementById("user_output_streaming");
+
+	if (!streamCheckbox.checked) return;
+	allow_stream = true;
+
+	if (batchCount > 1) {
+		// Make the stream chunks if we have multiple batches, otherwise we'll
+		// just throw the tokens directly into the main text zone.
+		const optionContainer = document.getElementById("Select Options")
+		let streamChunk =  document.createElement("div");
+		streamChunk.id = "Stream Chunk"
+
+		let table = document.createElement("div");
+		table.classList.add("sequences");
+
+		for (let i=0;i<batchCount;i++) {
+			var row = document.createElement("div");
+			row.classList.add("sequence_row");
+			var textCell = document.createElement("span");
+
+			textCell.id = `stream_batch_${i}`
+			textCell.classList.add("sequence");
+			textCell.classList.add("stream_sequence");
+
+			row.append(textCell)
+			table.append(row);
+		}
+
+		streamChunk.append(table);
+		optionContainer.append(streamChunk);
+	}
+}
+
+function do_submit() {
+	const textInput = document.getElementById("input_text");
+
+	begin_stream();
+	socket.emit('submit', {'data': textInput.value});
+	textInput.value = "";
+}
+
+function do_back() {
+	socket.emit('back', {});
+}
+
+function do_redo() {
+	socket.emit('redo', {});
+}
+
+function do_retry() {
+	begin_stream();
+	socket.emit('retry', {});
 }
 
 function do_story_text_updates(data) {
@@ -351,6 +465,9 @@ function var_changed(data) {
 	//Special Case for Story Options
 	} else if ((data.classname == "actions") && (data.name == "Options")) {
 		create_options(data);
+	// Special Case for Token Streaming
+	} else if ((data.classname == "actions") && (data.name == "Streamed Token")) {
+		show_streamed_token(data);
 	//Special Case for Story Text Length
 	} else if ((data.classname == "actions") && (data.name == "Selected Text Length")) {
 		do_story_text_length_updates(data);
@@ -407,7 +524,7 @@ function var_changed(data) {
 			var chunk = children[i];
 			if (chunk.id == "Select Options Chunk " + current_chunk) {
 				chunk.classList.remove("hidden");
-			} else {
+			} else if (chunk.id !== "Stream Chunk") {
 				chunk.classList.add("hidden");
 			}
 		}
