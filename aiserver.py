@@ -72,6 +72,10 @@ try:
 except:
     pass
 import transformers.generation_utils
+# Text2img
+import base64
+from PIL import Image, ImageFont, ImageDraw, ImageFilter, ImageOps
+from io import BytesIO
 
 global tpu_mtj_backend
 
@@ -1203,6 +1207,8 @@ def general_startup(override_args=None):
     parser.add_argument("--model", help="Specify the Model Type to skip the Menu")
     parser.add_argument("--path", help="Specify the Path for local models (For model NeoCustom or GPT2Custom)")
     parser.add_argument("--apikey", help="Specify the API key to use for online services")
+    parser.add_argument("--sh_apikey", help="Specify the API key to use for txt2img from the Stable Horde. Get a key from https://stablehorde.net/register")
+    parser.add_argument("--text2img", action='store_true', default=False, help="Will convert the sent prompt into an image, using Stable Horde")
     parser.add_argument("--req_model", type=str, action='append', required=False, help="Which models which we allow to generate for us during cluster mode. Can be specified multiple times.")
     parser.add_argument("--revision", help="Specify the model revision for huggingface models (can be a git branch/tag name or a git commit hash)")
     parser.add_argument("--cpu", action='store_true', help="By default unattended launches are on the GPU use this option to force CPU usage.")
@@ -1280,6 +1286,9 @@ def general_startup(override_args=None):
 
     if args.apikey:
         koboldai_vars.apikey = args.apikey
+    if args.sh_apikey:
+        koboldai_vars.sh_apikey = args.sh_apikey
+    koboldai_vars.text2img = args.text2img
     if args.req_model:
         koboldai_vars.cluster_requested_models = args.req_model
 
@@ -2171,7 +2180,9 @@ def load_model(use_gpu=True, gpu_layers=None, disk_layers=None, initial_load=Fal
     if not utils.HAS_ACCELERATE:
         disk_layers = None
     koboldai_vars.reset_model()
-    koboldai_vars.cluster_requested_models = online_model
+    # Not sure what this is doing here, but it's breaking using the horde as it was, as cluster_requested_models has to be a list with valid models
+    if online_model != '':
+        koboldai_vars.cluster_requested_models = [online_model]
     koboldai_vars.noai = False
     if not use_breakmodel_args:
         set_aibusy(True)
@@ -4781,6 +4792,10 @@ def calcsubmit(txt):
             print("Using Alt Gen")
         else:
             subtxt, min, max = calcsubmitbudget(actionlen, winfo, mem, anotetxt, koboldai_vars.actions, submission=txt)
+        if koboldai_vars.text2img:
+            thread = threading.Thread(target=text2img, args=(txt,))
+            thread.daemon = True
+            thread.start()
         if(actionlen == 0):
             if(not koboldai_vars.use_colab_tpu and koboldai_vars.model not in ["Colab", "API", "CLUSTER", "OAI", "TPUMeshTransformerGPTJ", "TPUMeshTransformerGPTNeoX"]):
                 generate(subtxt, min, max, found_entries=found_entries)
@@ -5027,9 +5042,43 @@ def generate(txt, minimum, maximum, found_entries=None):
     
     set_aibusy(0)
 
+
+@logger.catch
+def text2img(prompt):
+    art_guide = ', fantasy illustration, artstation, by jason felix by steve argyle by tyler jacobson by peter mohrbacher, cinematic lighting'
+    final_filename = "story_art.png"
+    final_imgen_params = {
+        "n": 1,
+        "width": 512,
+        "height": 512,
+        "steps": 50,
+    }
+
+    final_submit_dict = {
+        "prompt": prompt + art_guide,
+        "api_key": koboldai_vars.sh_apikey if koboldai_vars.sh_apikey != '' else "0000000000",
+        "params": final_imgen_params,
+    }
+    logger.debug(final_submit_dict)
+    submit_req = requests.post('https://stablehorde.net/api/v1/generate/sync', json = final_submit_dict)
+    if submit_req.ok:
+        results = submit_req.json()
+        for iter in range(len(results)):
+            b64img = results[iter]["img"]
+            base64_bytes = b64img.encode('utf-8')
+            img_bytes = base64.b64decode(base64_bytes)
+            img = Image.open(BytesIO(img_bytes))
+            if len(results) > 1:
+                final_filename = f"{iter}_{filename}"
+            img.save(final_filename)
+            return(img)
+    else:
+        print(submit_req.text)
+
 #==================================================================#
 #  Deal with a single return sequence from generate()
 #==================================================================#
+@logger.catch
 def genresult(genout, flash=True, ignore_formatting=False):
     if not koboldai_vars.quiet:
         logger.generation(genout.encode("unicode_escape").decode("utf-8"))

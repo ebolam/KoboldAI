@@ -705,7 +705,11 @@ class user_settings(settings):
         self.output_streaming = True
         self.show_probs = False # Whether or not to show token probabilities
         self.beep_on_complete = False
-        
+        self.sh_apikey   = ""     # API key to use for txt2img from the Stable Horde.
+        self.text2img    = False  # If set to true, will create image generations based on the player's prompt
+        # Text to append to the end of a prompt, to specify artistic direction. It is always prepended by ', ' 
+        # Example: "fantasy illustration, artstation, by jason felix by steve argyle by tyler jacobson by peter mohrbacher, cinematic lighting"
+        self.art_direction   = ""
         
     def __setattr__(self, name, value):
         new_variable = name not in self.__dict__
