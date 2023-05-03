@@ -41,3 +41,4 @@ dependencies:
     - ftfy
     - pydub
     - diffusers
+    - chromadb
