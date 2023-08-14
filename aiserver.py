@@ -8758,7 +8758,7 @@ def calc_vector_memory(new_text):
             metadatas.append({"sentence_id": i, "action_ids": ",".join(set([str(element) for nestedlist in sentence_chunk for element in nestedlist[1]]))})
             
             
-        collection.add(documents=documents, ids=ids, metadatas=metadatas)
+        tpool.execute(collection.add, documents=documents, ids=ids, metadatas=metadatas)
         
         query_text = "".join([x[0] for x in sentences[-koboldai_vars.vector_input_width if koboldai_vars.vector_input_width < len(sentences) else -len(sentences):]])
         
@@ -8780,7 +8780,7 @@ def calc_vector_memory(new_text):
         df = pd.DataFrame.from_dict(results).sort_values('distances', ascending=True)
         df = df[df["distances"] <= koboldai_vars.vector_max_distance]
         df['query text'] = query_text
-        koboldai_vars.vector_memory = " ".join(df['documents'].to_list())
+        koboldai_vars.vector_memory = "\n------------------------------------------------------------------\n".join(df['documents'].to_list())
     else:
         koboldai_vars.vector_memory = ""
     logger.info("Vector_Memory: {}".format(koboldai_vars.vector_memory))
