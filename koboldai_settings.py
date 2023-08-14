@@ -225,6 +225,7 @@ class koboldai_vars(object):
         allowed_wi_folders: If not None, only world info folders with uids in the given set are allowed to be used.
         """
         #start_time = time.time()
+        self.actions.reset_used_sentence()
         if self.tokenizer is None:
             if return_text:
                 return ""
@@ -344,6 +345,7 @@ class koboldai_vars(object):
         if self.useprompt:
             prompt_length = 0
             prompt_data = []
+            i=len(action_text_spl)-1
             for item in reversed(action_text_split):
                 if -1 in item[1]:
                     tokenized_data = [[x, self.tokenizer.decode(x)] for x in self.tokenizer.encode(item[0])]
@@ -352,6 +354,8 @@ class koboldai_vars(object):
                         prompt_length += item[2]
                         item[3] = True
                         prompt_data = tokenized_data + prompt_data
+                        self.actions.set_used_sentence(i, prompt=True)
+                i-=1
             prompt_text = self.tokenizer.decode([x[0] for x in prompt_data])
             #wi_search = re.sub("[^A-Za-z\ 0-9\'\"]", "", prompt_text)
             wi_search = prompt_text
@@ -492,6 +496,7 @@ class koboldai_vars(object):
                                 used_tokens += len(wi_tokens)
                                 if send_context:
                                     self.worldinfo_v2.set_world_info_used(wi['uid'])
+                self.actions.set_used_sentence(i)
             else:
                 used_all_tokens = True
                 break
@@ -1399,6 +1404,8 @@ class KoboldStoryRegister(object):
         self.make_audio_thread_slow = None
         self.make_audio_queue_slow = multiprocessing.Queue()
         self.probability_buffer = None
+        self.used_sentences = []
+        self.min_used_sentence = None
         for item in sequence:
             self.append(item)
     
@@ -2213,6 +2220,17 @@ class KoboldStoryRegister(object):
                 chunks.append({"type": action_original_type, "content": content})
 
         return chunks
+
+    def set_used_sentence(self, i, prompt=False):
+        if i not in self.used_sentences:
+            self.used_sentences.append(i)
+        if not prompt:
+            if self.min_used_sentence is None or i < self.min_used_sentence:
+                self.min_used_sentence = i
+    
+    def reset_used_sentence(self):
+        self.used_sentences = []
+        self.min_used_sentence = None
 
     def __setattr__(self, name, value):
         new_variable = name not in self.__dict__

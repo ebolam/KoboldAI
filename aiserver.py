@@ -8738,26 +8738,48 @@ def UI_2_submit(data):
 def calc_vector_memory(new_text):
     koboldai_vars.vector_memory = "Generating..."
     ######################################### Get Action Text by Sentence ########################################################
-    action_text_split = koboldai_vars.actions.to_sentences(submitted_text=new_text)
+    sentences = koboldai_vars.actions.to_sentences(submitted_text=new_text)
     
     ######################################### Recreate vector database ###########################################################
-    action_sentences = [x[0] for x in action_text_split]
-    if len(action_sentences) > 0 and client is not None:
-        action_sentences = [" ".join(action_sentences[i * koboldai_vars.vector_sentence_width:(i + 1) * koboldai_vars.vector_sentence_width]).strip() for i in range((len(action_sentences) + koboldai_vars.vector_sentence_width - 1) // koboldai_vars.vector_sentence_width )]
-        try:
-            client.delete_collection("koboldai_story")
-        except:
-            pass
-        collection = client.create_collection("koboldai_story") 
-        collection.add(documents=action_sentences, ids=[str(x) for x in range(len(action_sentences))])
-        results = collection.query(
-            query_texts=[action_sentences[-koboldai_vars.vector_input_width if koboldai_vars.vector_input_width > len(action_sentences) else -len(action_sentences):]],
-            n_results=koboldai_vars.vector_return_width if len(action_sentences) > koboldai_vars.vector_return_width else 1,
-            include=["documents", "distances"]
-        )
+    if len(sentences) > 0 and client is not None:
+        
+        client.reset()
+        collection = client.create_collection("koboldai_action_sentences") 
+
+        i=0
+        documents = []
+        ids = []
+        metadatas = []
+        chunksize=koboldai_vars.vector_sentence_width
+        for i in range(len(sentences)):
+            sentence_chunk = sentences[i-chunksize if i-chunksize>=0 else 0:i+chunksize if i+chunksize < len(sentences) else len(sentences)-1]
+            documents.append("".join([x[0] for x in sentence_chunk]))
+            ids.append(str(i))
+            metadatas.append({"sentence_id": i, "action_ids": ",".join(set([str(element) for nestedlist in sentence_chunk for element in nestedlist[1]]))})
+            
+            
+        collection.add(documents=documents, ids=ids, metadatas=metadatas)
+        
+        query_text = "".join([x[0] for x in sentences[-koboldai_vars.vector_input_width if koboldai_vars.vector_input_width < len(sentences) else -len(sentences):]])
+        
+        if koboldai_vars.actions.min_used_sentence is not None:
+            results = collection.query(
+                query_texts=[query_text],
+                n_results=koboldai_vars.vector_return_width if len(sentences) > koboldai_vars.vector_return_width else 1,
+                include=["documents", "distances"],
+                where={"sentence_id": {"$lt": koboldai_vars.actions.min_used_sentence}}
+            )
+        else:
+            results = collection.query(
+                query_texts=[query_text],
+                n_results=koboldai_vars.vector_return_width if len(sentences) > koboldai_vars.vector_return_width else 1,
+                include=["documents", "distances"]
+            )
+
         results = {x: results[x][0] for x in results if results[x] is not None}
         df = pd.DataFrame.from_dict(results).sort_values('distances', ascending=True)
         df = df[df["distances"] <= koboldai_vars.vector_max_distance]
+        df['query text'] = query_text
         koboldai_vars.vector_memory = " ".join(df['documents'].to_list())
     else:
         koboldai_vars.vector_memory = ""
