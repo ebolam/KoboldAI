@@ -1,4 +1,4 @@
-'''
+"""
 This file is AGPL-licensed.
 
 Some of the code in this file is copied from PyTorch.
@@ -41,43 +41,94 @@ INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
 CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
-'''
+"""
 
 
 import contextlib
 from functools import reduce
 import itertools
+import time
 import zipfile
 import pickle
 import torch
-import numpy as np
-import collections
-import _codecs
-import utils
 import os
+from typing import Any, Callable, Dict, Optional, Tuple, Type
+
 from torch.nn import Module
-from typing import Any, Callable, Dict, Optional, Tuple, Type, Union
+from torch.storage import UntypedStorage
+from modeling.pickling import RestrictedUnpickler, use_custom_unpickler
+from modeling.patches import LazyloadPatches
+
+# Safetensors is a dependency for the local version, TPU/Colab doesn't
+# support it yet.
+try:
+    import safetensors
+
+    HAS_SAFETENSORS = True
+except ModuleNotFoundError:
+    HAS_SAFETENSORS = False
+
+try:
+    import accelerate
+    USE_TPU_EMPTY_MODULE_METHOD = False
+except ModuleNotFoundError:
+    USE_TPU_EMPTY_MODULE_METHOD = True
+
+import utils
+from logger import logger
+
+# Storage of zipfile handles for each shard
+torch_checkpoint_file_handles = {}
 
 
-_EXTRA_STATE_KEY_SUFFIX = '_extra_state'
+class CheckpointChunkCache:
+    """Storage for common checkpoint weight files to speed up loading. In order
+    for this to be effective at all, weights must be loaded in ascending order
+    of (key, seek_offset).
+    """
 
+    # There is considerable room for improvement here; we could peek into the
+    # state dict and preload the N most frequent weight files or something, but
+    # this first implementation is on par with the speed of whatever the
+    # previous callback did.
 
-STORAGE_TYPE_MAP = {
-    torch.float64: torch.DoubleStorage,
-    torch.float32: torch.FloatStorage,
-    torch.float16: torch.HalfStorage,
-    torch.int64: torch.LongStorage,
-    torch.int32: torch.IntStorage,
-    torch.int16: torch.ShortStorage,
-    torch.int8: torch.CharStorage,
-    torch.uint8: torch.ByteStorage,
-    torch.bool: torch.BoolStorage,
-    torch.bfloat16: torch.BFloat16Storage,
-}
+    file_name = None
+    key = None
+    handle = None
+
+    hit_data = {"hits": 0, "misses": 0}
+
+    @classmethod
+    def clear(cls, unload_model: bool = False) -> None:
+        if unload_model:
+            cls.hit_data["hits"] = 0
+            cls.hit_data["misses"] = 0
+
+        if cls.handle:
+            cls.handle.close()
+
+        cls.file_name = None
+        cls.key = None
+        cls.handle = None
 
 
 class LazyTensor:
-    def __init__(self, storage_type, key: str, location: str, dtype: Optional[torch.dtype] = None, seek_offset: Optional[int] = None, shape: Optional[Tuple[int, ...]] = None, stride: Optional[Tuple[int, ...]] = None, requires_grad=False, backward_hooks: Any = None):
+    pass
+
+
+class TorchLazyTensor(LazyTensor):
+    def __init__(
+        self,
+        storage_type,
+        key: str,
+        location: str,
+        dtype: Optional[torch.dtype] = None,
+        seek_offset: Optional[int] = None,
+        shape: Optional[Tuple[int, ...]] = None,
+        stride: Optional[Tuple[int, ...]] = None,
+        requires_grad=False,
+        backward_hooks: Any = None,
+    ):
         self.storage_type = storage_type
         self.key = key
         self.location = location
@@ -87,6 +138,7 @@ class LazyTensor:
         self.stride = stride
         self.requires_grad = requires_grad
         self.backward_hooks = backward_hooks
+        self.file_name = None
 
     def __view(self, f: Callable):
         return f"{type(self).__name__}(storage_type={f(self.storage_type)}, key={f(self.key)}, location={f(self.location)}, dtype={f(self.dtype)}, seek_offset={f(self.seek_offset)}, shape={f(self.shape)}, stride={f(self.stride)}, requires_grad={f(self.requires_grad)}, backward_hooks={f(self.backward_hooks)})"
@@ -94,73 +146,93 @@ class LazyTensor:
     def __repr__(self):
         return self.__view(repr)
 
-    def materialize(self, checkpoint: Union[zipfile.ZipFile, zipfile.ZipExtFile], map_location=None, no_grad=True, filename="pytorch_model.bin") -> torch.Tensor:
-        filename = os.path.basename(os.path.normpath(filename)).split('.')[0]
+    def materialize(
+        self,
+        map_location=None,
+        no_grad=True,
+    ) -> torch.Tensor:
+        checkpoint = torch_checkpoint_file_handles[self.file_name]
+        filename = os.path.basename(os.path.normpath(self.file_name)).split(".")[0]
+
+        # Often we are using the same weight file to store multiple tensors, so
+        # let's cache the file handle to maintain a seek position and other
+        # fast stuff.
+        if (
+            CheckpointChunkCache.file_name != filename
+            or CheckpointChunkCache.key != self.key
+            or not CheckpointChunkCache.handle
+        ):
+            # Cache miss. Assuming weights are loaded in order of
+            # (key, seek_offset), this means we need to invalidate the cache.
+            # print("!", end="", flush=True)
+            CheckpointChunkCache.hit_data["misses"] += 1
+
+            CheckpointChunkCache.clear()
+
+            CheckpointChunkCache.file_name = filename
+            CheckpointChunkCache.key = self.key
+            ziproot = checkpoint.namelist()[0].split("/")[0]
+            CheckpointChunkCache.handle = checkpoint.open(f"{ziproot}/data/{self.key}", "r")
+        else:
+            # Cache hit. Hip hip hooray! :^)
+            # print(".", end="", flush=True)
+            CheckpointChunkCache.hit_data["hits"] += 1
+
         size = reduce(lambda x, y: x * y, self.shape, 1)
         dtype = self.dtype
-        nbytes = size if dtype is torch.bool else size * ((torch.finfo if dtype.is_floating_point else torch.iinfo)(dtype).bits >> 3)
-        if isinstance(checkpoint, zipfile.ZipFile):
-            try:
-                f = checkpoint.open(f"archive/data/{self.key}", "r")
-            except:
-                f = checkpoint.open(f"{filename}/data/{self.key}", "r")
-            f.read(self.seek_offset)
-        else:
-            f = checkpoint
-        try:
-            storage = STORAGE_TYPE_MAP[dtype].from_buffer(f.read(nbytes), "little")
-        finally:
-            if isinstance(checkpoint, zipfile.ZipFile):
-                f.close()
-        storage = torch.serialization._get_restore_location(map_location)(storage, self.location)
-        tensor = torch.tensor([], dtype=storage.dtype, device=storage.device)
+        nbytes = (
+            size
+            if dtype is torch.bool
+            else size
+            * (
+                (torch.finfo if self.dtype.is_floating_point else torch.iinfo)(
+                    self.dtype
+                ).bits
+                >> 3
+            )
+        )
+
+        assert isinstance(checkpoint, zipfile.ZipFile)
+
+        CheckpointChunkCache.handle.seek(self.seek_offset, os.SEEK_SET)
+        storage = UntypedStorage.from_buffer(
+            CheckpointChunkCache.handle.read(nbytes), "little", dtype=self.dtype
+        )
+
+        storage = torch.serialization._get_restore_location(map_location)(
+            storage, self.location
+        )
+        tensor = torch.tensor([], dtype=self.dtype, device=storage.device)
         tensor.set_(storage, 0, self.shape, self.stride)
         tensor.requires_grad = not no_grad and self.requires_grad
         tensor._backward_hooks = self.backward_hooks
         return tensor
 
-class RestrictedUnpickler(pickle.Unpickler):
-    def original_persistent_load(self, saved_id):
-        return super().persistent_load(saved_id)
 
-    def forced_persistent_load(self, saved_id):
-        if saved_id[0] != "storage":
-            raise pickle.UnpicklingError("`saved_id[0]` must be 'storage'")
-        return self.original_persistent_load(saved_id)
+class SafetensorsLazyTensor(LazyTensor):
+    def __init__(self, checkpoint_file: str, key: str, location: str):
+        self.checkpoint_file = checkpoint_file
+        self.key = key
+        self.location = location
 
-    def find_class(self, module, name):
-        if module == "collections" and name == "OrderedDict":
-            return collections.OrderedDict
-        elif module == "torch._utils" and name == "_rebuild_tensor_v2":
-            return torch._utils._rebuild_tensor_v2
-        elif module == "torch" and name in (
-            "DoubleStorage",
-            "FloatStorage",
-            "HalfStorage",
-            "LongStorage",
-            "IntStorage",
-            "ShortStorage",
-            "CharStorage",
-            "ByteStorage",
-            "BoolStorage",
-            "BFloat16Storage",
-        ):
-            return getattr(torch, name)
-        elif module == "numpy.core.multiarray" and name == "scalar":
-            return np.core.multiarray.scalar
-        elif module == "numpy" and name == "dtype":
-            return np.dtype
-        elif module == "_codecs" and name == "encode":
-            return _codecs.encode
-        else:
-            # Forbid everything else.
-            qualified_name = name if module == "__builtin__" else f"{module}.{name}"
-            raise pickle.UnpicklingError(f"`{qualified_name}` is forbidden; the model you are loading probably contains malicious code")
+        # Stub for cache sorting
+        self.seek_offset = 0
 
-    def load(self, *args, **kwargs):
-        self.original_persistent_load = getattr(self, "persistent_load", pickle.Unpickler.persistent_load)
-        self.persistent_load = self.forced_persistent_load
-        return super().load(*args, **kwargs)
+    def __view(self, f: Callable):
+        return f"{type(self).__name__}(checkpoint_file={f(self.checkpoint_file)}, key={f(self.key)}, location={f(self.location)})"
+
+    def __repr__(self):
+        return self.__view(repr)
+
+    def materialize(
+        self,
+        *args,
+        **kwargs,
+    ) -> torch.Tensor:
+        return safetensors_load_tensor_independently(
+            self.checkpoint_file, tensor_key=self.key, device=self.location
+        )
+
 
 class _LazyUnpickler(RestrictedUnpickler):
     lazy_loaded_storages: Dict[str, LazyTensor]
@@ -172,9 +244,11 @@ class _LazyUnpickler(RestrictedUnpickler):
     def forced_persistent_load(self, saved_id):
         assert isinstance(saved_id, tuple)
         typename = saved_id[0]
-        assert typename == "storage", f"Unknown typename for persistent_load, expected 'storage' but got '{typename}'"
+        assert (
+            typename == "storage"
+        ), f"Unknown typename for persistent_load, expected 'storage' but got '{typename}'"
         storage_type, key, location, _ = saved_id[1:]
-        return LazyTensor(storage_type, key, location)
+        return TorchLazyTensor(storage_type, key, location)
 
     def load(self, *args, **kwargs):
         retval = super().load(*args, **kwargs)
@@ -189,11 +263,74 @@ def _rebuild_tensor(lazy_storage: LazyTensor, storage_offset, shape, stride):
     if not isinstance(dtype, torch.dtype):
         dtype = lazy_storage.storage_type(0).dtype
     lazy_storage.dtype = dtype
-    lazy_storage.seek_offset = storage_offset if dtype is torch.bool else storage_offset * ((torch.finfo if dtype.is_floating_point else torch.iinfo)(dtype).bits >> 3)
+    lazy_storage.seek_offset = (
+        storage_offset
+        if dtype is torch.bool
+        else storage_offset
+        * ((torch.finfo if dtype.is_floating_point else torch.iinfo)(dtype).bits >> 3)
+    )
     return lazy_storage
 
 
-# Modified version of https://github.com/pytorch/pytorch/blob/v1.11.0-rc4/torch/nn/modules/module.py#L1346-L1438
+def safetensors_load_tensor_independently(
+    checkpoint_file: str, tensor_key: str, device: Any
+) -> torch.Tensor:
+    """A hacky way to load a tensor by itself and not mmap every single tensor
+    or whatever is causing that big memory spike"""
+
+    with safetensors.safe_open(checkpoint_file, framework="pt", device=device) as f:
+        return f.get_tensor(tensor_key)
+
+
+def patch_safetensors(callback):
+    # Safetensors load patch
+    import transformers
+
+    def safetensors_load(checkpoint_file: str) -> dict:
+        # Monkeypatch applied to safetensors.torch.load_file
+
+        if utils.koboldai_vars.hascuda:
+            # Use GPU as intermediary whenever possible, lowers RAM usage
+            # by a significant amount while making loading slightly slower
+            # (70 tensors/s -> 65 tensor/s). The memory savings probably
+            # shouldn't be the happening, maybe there's a memory leak
+            # somewhere in our pipeline with CPU tensors.
+            intermediary_device = "cuda:0"
+        else:
+            intermediary_device = "cpu"
+
+        tensors = {}
+
+        with safetensors.safe_open(
+            checkpoint_file,
+            framework="pt",
+            device=intermediary_device,
+        ) as f:
+            for key in f.keys():
+                tensors[key] = None
+
+        for key in tensors.keys():
+            tensors[key] = SafetensorsLazyTensor(
+                checkpoint_file=checkpoint_file,
+                key=key,
+                location=intermediary_device,
+            )
+
+        if callback is not None:
+            callback(
+                tensors,
+                f=checkpoint_file,
+                map_location=None,
+                pickle_module=pickle,
+                is_safetensors=True,
+            )
+
+        return tensors
+
+    transformers.modeling_utils.safe_load_file = safetensors_load
+    safetensors.torch.load_file = safetensors_load
+
+
 def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
     for hook in self._load_state_dict_pre_hooks.values():
         hook(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
@@ -244,7 +381,7 @@ def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, miss
         elif strict:
             missing_keys.append(key)
 
-    extra_state_key = prefix + _EXTRA_STATE_KEY_SUFFIX
+    extra_state_key = prefix + "_extra_state"
     if hasattr(Module, "set_extra_state") and getattr(self.__class__, "set_extra_state", Module.set_extra_state) is not Module.set_extra_state:  # if getattr(self.__class__, "set_extra_state", Module.set_extra_state) is not Module.set_extra_state:
         if extra_state_key in state_dict:
             self.set_extra_state(state_dict[extra_state_key])
@@ -261,50 +398,63 @@ def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, miss
                 if input_name not in self._modules and input_name not in local_state:
                     unexpected_keys.append(key)
 
-
 @contextlib.contextmanager
-def use_custom_unpickler(unpickler: Type[pickle.Unpickler] = RestrictedUnpickler):
-    try:
-        old_unpickler = pickle.Unpickler
-        pickle.Unpickler = unpickler
-
-        old_pickle_load = pickle.load
-
-        def new_pickle_load(*args, **kwargs):
-            return pickle.Unpickler(*args, **kwargs).load()
-
-        pickle.load = new_pickle_load
-
-        yield
-
-    finally:
-        pickle.Unpickler = old_unpickler
-        pickle.load = old_pickle_load
-
-@contextlib.contextmanager
-def use_lazy_torch_load(enable=True, callback: Optional[Callable] = None, dematerialized_modules=False, use_accelerate_init_empty_weights=False):
+def use_lazy_load(
+    enable=True,
+    callback: Optional[Callable] = None,
+    dematerialized_modules=False,
+):
     if not enable:
         with use_custom_unpickler(RestrictedUnpickler):
             yield False
         return
 
+    begin_time = time.time()
+
     try:
+        LazyloadPatches.__enter__()
+
         old_rebuild_tensor = torch._utils._rebuild_tensor
         torch._utils._rebuild_tensor = _rebuild_tensor
 
+        # Torch load patch
         old_torch_load = torch.load
 
         def torch_load(f, map_location=None, pickle_module=pickle, **pickle_load_args):
-            retval = old_torch_load(f=f, map_location=map_location, pickle_module=pickle_module, **pickle_load_args)
+            model_dict = old_torch_load(
+                f=f,
+                map_location=map_location,
+                pickle_module=pickle_module,
+                **pickle_load_args,
+            )
+
+            if f not in torch_checkpoint_file_handles:
+                torch_checkpoint_file_handles[f] = zipfile.ZipFile(f, "r")
+
+            for k, v in model_dict.items():
+                v.file_name = f
+
             if callback is not None:
-                callback(retval, f=f, map_location=map_location, pickle_module=pickle_module, **pickle_load_args)
-            return retval
+                callback(
+                    model_dict,
+                    f=f,
+                    map_location=map_location,
+                    pickle_module=pickle_module,
+                    is_safetensors=False,
+                    **pickle_load_args,
+                )
+
+            return model_dict
 
         torch.load = torch_load
 
+        if HAS_SAFETENSORS:
+            patch_safetensors(callback)
+
         if dematerialized_modules:
-            if use_accelerate_init_empty_weights and utils.HAS_ACCELERATE:
-                import accelerate
+            # Most devices can just use Accelerate's implementation, but the Transformers on
+            # the TPU complains about emptied weights unless we use VE's custom patches
+            if not USE_TPU_EMPTY_MODULE_METHOD:
                 init_empty_weights = accelerate.init_empty_weights()
                 init_empty_weights.__enter__()
             else:
@@ -331,13 +481,39 @@ def use_lazy_torch_load(enable=True, callback: Optional[Callable] = None, demate
             yield True
 
     finally:
+        LazyloadPatches.__exit__(None, None, None)
         torch._utils._rebuild_tensor = old_rebuild_tensor
         torch.load = old_torch_load
+
+        post_load_cleanup()
+        logger.debug(
+            f"[lazy_load] Context closed in {round(time.time() - begin_time, 2)} seconds."
+        )
+
         if dematerialized_modules:
-            if use_accelerate_init_empty_weights and utils.HAS_ACCELERATE:
+            if not USE_TPU_EMPTY_MODULE_METHOD:
                 init_empty_weights.__exit__(None, None, None)
             else:
                 torch.nn.Linear.__init__ = old_linear_init
                 torch.nn.Embedding.__init__ = old_embedding_init
                 torch.nn.LayerNorm.__init__ = old_layernorm_init
                 torch.nn.Module._load_from_state_dict = old_load_from_state_dict
+
+
+def post_load_cleanup() -> None:
+    """Close dangling file pointers and clear caches after the load is complete."""
+    global torch_checkpoint_file_handles
+
+    logger.debug(
+        f"[lazy_load] CheckpointChunkCache Hit Data: {CheckpointChunkCache.hit_data}"
+    )
+    CheckpointChunkCache.clear(unload_model=True)
+
+    # Bar is initialized in
+    # patches.patch_transformers_for_lazyload._load_state_dict_into_meta_model,
+    # as it has access to the state dict (for getting tensor count)
+    utils.bar = None
+
+    for v in torch_checkpoint_file_handles.values():
+        v.close()
+    torch_checkpoint_file_handles = {}
