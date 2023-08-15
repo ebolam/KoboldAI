@@ -6191,9 +6191,11 @@ def calc_vector_memory(new_text):
         
         try:
             client.reset()
+            collection = client.create_collection("koboldai_action_sentences") 
         except:
             pass
-        collection = client.create_collection("koboldai_action_sentences") 
+        
+        collection.delete(ids=[x for x in range(collection.count())])
 
         i=0
         documents = []
