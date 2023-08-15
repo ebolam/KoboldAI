@@ -6183,6 +6183,7 @@ collection = None
 @socketio.on('calc_vector_memory')
 @logger.catch
 def calc_vector_memory(new_text):
+    global collection
     koboldai_vars.vector_memory = "Generating..."
     ######################################### Get Action Text by Sentence ########################################################
     sentences = koboldai_vars.actions.to_sentences(submitted_text=new_text)
