@@ -6189,7 +6189,10 @@ def calc_vector_memory(new_text):
     ######################################### Recreate vector database ###########################################################
     if len(sentences) > 0 and client is not None:
         
-        client.reset()
+        try:
+            client.reset()
+        except:
+            pass
         collection = client.create_collection("koboldai_action_sentences") 
 
         i=0
