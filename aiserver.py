@@ -6194,7 +6194,7 @@ def calc_vector_memory(new_text):
         if collection is None:
             collection = client.create_collection("koboldai_action_sentences") 
         
-        collection.delete(ids=[x for x in range(collection.count())])
+        collection.delete(ids=[str(x) for x in range(collection.count())])
 
         i=0
         documents = []
