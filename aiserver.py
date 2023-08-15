@@ -6179,6 +6179,7 @@ def UI_2_submit(data):
 #==================================================================#
 # Generates vector memory
 #==================================================================#
+collection = None
 @socketio.on('calc_vector_memory')
 @logger.catch
 def calc_vector_memory(new_text):
@@ -6189,11 +6190,8 @@ def calc_vector_memory(new_text):
     ######################################### Recreate vector database ###########################################################
     if len(sentences) > 0 and client is not None:
         
-        try:
-            client.reset()
+        if collection is None:
             collection = client.create_collection("koboldai_action_sentences") 
-        except:
-            pass
         
         collection.delete(ids=[x for x in range(collection.count())])
 
