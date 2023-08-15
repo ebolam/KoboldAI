@@ -98,7 +98,7 @@ enable_whitelist = False
 try:
     import chromadb
     import pandas as pd
-    client = chromadb.Client(chromadb.config.Settings (anonymized_telemetry=False))
+    client = chromadb.EphemeralClient(chromadb.config.Settings (anonymized_telemetry=False))
 except:
     client = None
 
