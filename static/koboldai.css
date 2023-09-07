@@ -443,7 +443,7 @@ border-top-right-radius: var(--tabs_rounding);
 	position: fixed;
 	top:10px;
 	left: 5px;
-	z-index:50;
+	z-index:21;
 	display: inline-block;
 	cursor: pointer;
 }
@@ -465,7 +465,7 @@ border-top-right-radius: var(--tabs_rounding);
 	position: absolute;
 	top:10px;
 	left: calc(var(--flyout_menu_width) - 20px);
-	z-index:50;
+	z-index:21;
 	width: 25px;
 	height: 25px;
 	color: #999;
@@ -502,7 +502,7 @@ border-top-right-radius: var(--tabs_rounding);
 
 .SideMenu {
 	height: 100%;
-	z-index: 4;
+	z-index: 20;
 	color: var(--flyout_text);
 	width: var(--flyout_menu_width);
 	box-shadow: var(--left_menu_strong_shadow);
@@ -900,7 +900,7 @@ border-top-right-radius: var(--tabs_rounding);
 	position: fixed;
 	top:10px;
 	right: 5px;
-	z-index:50;
+	z-index:11;
 	display: inline-block;
 	cursor: pointer;
 	grid-area: lefticon;
@@ -914,7 +914,7 @@ border-top-right-radius: var(--tabs_rounding);
 }
 
 .rightSideMenu {
-	z-index: 3;
+	z-index: 10;
 	height: 100%;
 	position: fixed;
 	color: var(--flyout_text);
