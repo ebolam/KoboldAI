@@ -3815,3 +3815,6 @@ select {
 	text-decoration: underline dotted red;
 }
 
+#story_prompt {
+	background-color: blue;
+}
