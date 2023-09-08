@@ -2874,7 +2874,9 @@ body {
 }
 
 .welcome_container {
+	position: absolute;
 	height: 100%;
+	width: 100%;
 	display: flex;
 	margin-top: auto;
 }
@@ -3813,8 +3815,4 @@ select {
 
 .dirty {
 	text-decoration: underline dotted red;
-}
-
-#story_prompt {
-	background-color: blue;
 }
