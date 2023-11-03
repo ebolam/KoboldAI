@@ -211,7 +211,7 @@ class HFTorchInferenceModel(HFInferenceModel):
                         return True
                 return False
 
-        old_gsc = transformers.GenerationMixin._get_stopping_criteria
+        m_self.old_gsc = transformers.GenerationMixin._get_stopping_criteria
 
         def _get_stopping_criteria(
             hf_self,
@@ -304,6 +304,11 @@ class HFTorchInferenceModel(HFInferenceModel):
                 m_self.model.save_pretrained(peft_local_path)
 
         return super()._post_load()
+
+    def unload(self):
+        transformers.GenerationMixin._get_stopping_criteria = self.old_gsc
+        self.unpatch_embedding()
+        super().unload()
 
     def _raw_generate(
         self,
@@ -494,7 +499,7 @@ class HFTorchInferenceModel(HFInferenceModel):
             Embedding._koboldai_patch_causallm_model = self.model
             return
 
-        old_embedding_call = Embedding.__call__
+        self.old_embedding_call = Embedding.__call__
 
         kai_model = self
 
@@ -528,6 +533,11 @@ class HFTorchInferenceModel(HFInferenceModel):
 
         Embedding.__call__ = new_embedding_call
         Embedding._koboldai_patch_causallm_model = self.model
+
+    def unpatch_embedding(self) -> None:
+        Embedding.__call__ = self.old_embedding_call
+        del Embedding._koboldai_patch_causallm_model
+        del self.old_embedding_call
 
     def breakmodel_device_list(self, n_layers, primary=None, selected=None):
         device_count = torch.cuda.device_count()
