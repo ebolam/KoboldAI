@@ -306,6 +306,9 @@ class HFTorchInferenceModel(HFInferenceModel):
         return super()._post_load()
 
     def unload(self):
+        print("##########################################")
+        print(self.model.lm_head.weight)
+        print("##########################################")
         transformers.GenerationMixin._get_stopping_criteria = self.old_gsc
         self.unpatch_embedding()
         super().unload()
@@ -432,6 +435,7 @@ class HFTorchInferenceModel(HFInferenceModel):
                 # ...but fall back to stock HF if lazyloader fails.
                 if utils.args.panic:
                     raise
+                raise
                 logger.error("Lazyloader failed, falling back to stock HF load. You may run out of RAM here. Details:")
                 logger.error(e)
                 logger.error(traceback.format_exc())
