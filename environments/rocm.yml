@@ -4,9 +4,9 @@ channels:
   - defaults
 dependencies:
   - colorama
-  - flask=2.2.3
+  - flask=2.3.3
   - flask-socketio=5.3.2
-  - flask-session=0.4.0
+  - flask-session=0.5.0
   - python-socketio=5.7.2
   - python=3.8.*
   - eventlet=0.33.3
@@ -15,7 +15,6 @@ dependencies:
   - bleach=4.1.0
   - pip
   - git=2.35.1
-  - sentencepiece
   - protobuf
   - marshmallow>=3.13
   - apispec-webframeworks
@@ -23,17 +22,20 @@ dependencies:
   - termcolor
   - Pillow
   - psutil
+  - ffmpeg
   - pip:
     - --extra-index-url https://download.pytorch.org/whl/rocm5.2
     - torch==1.13.1+rocm5.2
     - flask-cloudflared==0.0.10
     - flask-ngrok
     - flask-cors
+    - Werkzeug==2.3.7
     - lupa==1.10
-    - transformers==4.31.0
-    - huggingface_hub==0.15.1
-    - safetensors==0.3.1
-    - accelerate==0.20.3
+    - transformers[sentencepiece]==4.34.0
+    - huggingface_hub==0.16.4
+    - optimum[onnxruntime]==1.13.2
+    - safetensors==0.3.3
+    - accelerate==0.21.0
     - git+https://github.com/VE-FORBRYDERNE/mkultra
     - ansi2html
     - flask_compress
@@ -44,4 +46,7 @@ dependencies:
     - git+https://github.com/0cc4m/hf_bleeding_edge/
     - einops
     - peft==0.3.0
-    - chromadb
+    - windows-curses; sys_platform == 'win32'
+    - pynvml
+    - https://github.com/PanQiWei/AutoGPTQ/releases/download/v0.4.2/auto_gptq-0.4.2+rocm5.4.2-cp38-cp38-linux_x86_64.whl
+    - omegaconf    - chromadb

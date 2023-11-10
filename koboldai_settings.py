@@ -21,10 +21,13 @@ queue = None
 multi_story = False
 global enable_whitelist
 enable_whitelist = False
+slow_tts_message_shown = False
 
 if importlib.util.find_spec("tortoise") is not None:
     from tortoise import api
     from tortoise.utils.audio import load_voices
+    
+password_vars = ["horde_api_key", "privacy_password", "img_gen_api_password"]
 
 def clean_var_for_emit(value):
     if isinstance(value, KoboldStoryRegister) or isinstance(value, KoboldWorldInfo):
@@ -37,7 +40,7 @@ def clean_var_for_emit(value):
         return value
 
 def process_variable_changes(socketio, classname, name, value, old_value, debug_message=None):
-    global multi_story
+    global multi_story, koboldai_vars_main
     if serverstarted and name != "serverstarted":
         transmit_time = str(datetime.datetime.now())
         if debug_message is not None:
@@ -83,14 +86,42 @@ def process_variable_changes(socketio, classname, name, value, old_value, debug_
             else:
                 #If we got a variable change from a thread other than what the app is run it, eventlet seems to block and no further messages are sent. Instead, we'll rely the message to the app and have the main thread send it
                 if not has_request_context():
-                    data = ["var_changed", {"classname": classname, "name": name, "old_value": clean_var_for_emit(old_value), "value": clean_var_for_emit(value), "transmit_time": transmit_time}, {"include_self":True, "broadcast":True, "room":room}]
+                    if not koboldai_vars_main.host or name not in password_vars:
+                        data = ["var_changed", {"classname": classname, "name": name, "old_value": clean_var_for_emit(old_value), "value": clean_var_for_emit(value), "transmit_time": transmit_time}, {"include_self":True, "broadcast":True, "room":room}]
+                    else:
+                        data = ["var_changed", {"classname": classname, "name": name, "old_value": "*" * len(old_value) if old_value is not None else "", "value": "*" * len(value) if value is not None else "", "transmit_time": transmit_time}, {"include_self":True, "broadcast":True, "room":room}]
                     if queue is not None:
                         #logger.debug("Had to use queue")
                         queue.put(data)
                         
                 else:
                     if socketio is not None:
-                        socketio.emit("var_changed", {"classname": classname, "name": name, "old_value": clean_var_for_emit(old_value), "value": clean_var_for_emit(value), "transmit_time": transmit_time}, include_self=True, broadcast=True, room=room)
+                        if not koboldai_vars_main.host or name not in password_vars:
+                            socketio.emit("var_changed", {"classname": classname, "name": name, "old_value": clean_var_for_emit(old_value), "value": clean_var_for_emit(value), "transmit_time": transmit_time}, include_self=True, broadcast=True, room=room)
+                        else:
+                            socketio.emit("var_changed", {"classname": classname, "name": name, "old_value":  "*" * len(old_value) if old_value is not None else "", "value": "*" * len(value) if value is not None else "", "transmit_time": transmit_time}, include_self=True, broadcast=True, room=room)
+
+def basic_send(socketio, classname, event, data):
+    #Get which room we'll send the messages to
+    global multi_story
+    if multi_story:
+        if classname != 'story':
+            room = 'UI_2'
+        else:
+            if has_request_context():
+                room = 'default' if 'story' not in session else session['story']
+            else:
+                logger.error("We tried to access the story register outside of an http context. Will not work in multi-story mode")
+                return
+    else:
+        room = "UI_2"
+    if not has_request_context():
+        if queue is not None:
+            #logger.debug("Had to use queue")
+            queue.put([event, data, {"broadcast":True, "room":room}])
+    else:
+        if socketio is not None:
+            socketio.emit(event, data, include_self=True, broadcast=True, room=room)
 
 class koboldai_vars(object):
     def __init__(self, socketio):
@@ -613,11 +644,16 @@ class settings(object):
                 if key == 'sampler_order':
                     if(len(value) < 7):
                         value = [6] + value
-                if key == 'autosave':
+                elif key == 'autosave':
                     autosave = value
+                elif key in ['worldinfo_u', 'wifolders_d']:
+                    # Fix UID keys to be ints
+                    value = {int(k): v for k, v in value.items()}
+
                 if isinstance(value, str):
                     if value[:7] == 'base64:':
                         value = pickle.loads(base64.b64decode(value[7:]))
+
                 #Need to fix the data type of value to match the module
                 if type(getattr(self, key)) == int:
                     setattr(self, key, int(value))
@@ -693,6 +729,7 @@ class model_settings(settings):
         self._koboldai_vars = koboldai_vars
         self.alt_multi_gen = False
         self.bit_8_available = None
+        self.use_default_badwordsids = True
         self.supported_gen_modes = []
         
     def reset_for_model_load(self):
@@ -1017,7 +1054,7 @@ class story_settings(settings):
                 new_world_info.add_item([x.strip() for x in wi["key"].split(",")][0], 
                                         wi["key"], 
                                         wi.get("keysecondary", ""), 
-                                        "root" if wi["folder"] is None else self.wifolders_d[str(wi['folder'])]['name'], 
+                                        "root" if wi["folder"] is None else self.wifolders_d[wi['folder']]['name'],
                                         wi.get("constant", False), 
                                         wi["content"], 
                                         wi.get("comment", ""), 
@@ -1356,38 +1393,42 @@ class system_settings(settings):
                 self._koboldai_var.calc_ai_text()
             
             if name == 'horde_share':
-                if self.on_colab == False:
-                    if os.path.exists("./KoboldAI-Horde-Bridge"):
-                        if value == True:
-                            if self._horde_pid is None:
-                                logger.info("Starting Horde bridge")
-                                bridge = importlib.import_module("KoboldAI-Horde-Bridge.bridge")
-                                self._horde_pid = bridge.kai_bridge()
-                                try:
-                                    bridge_cd = importlib.import_module("KoboldAI-Horde-Bridge.clientData")
-                                    cluster_url = bridge_cd.cluster_url
-                                    kai_name = bridge_cd.kai_name
-                                    if kai_name == "My Awesome Instance":
-                                        kai_name = f"KoboldAI UI Instance #{random.randint(-100000000, 100000000)}"
-                                    api_key = bridge_cd.api_key
-                                    priority_usernames = bridge_cd.priority_usernames
-                                except:
-                                    cluster_url = "https://horde.koboldai.net"
-                                    kai_name = self._koboldai_var.horde_worker_name
-                                    if kai_name == "My Awesome Instance":
-                                        kai_name = f"KoboldAI UI Instance #{random.randint(-100000000, 100000000)}"
-                                    api_key = self._koboldai_var.horde_api_key
-                                    priority_usernames = []
-                                # Always use the local URL & port
-                                kai_url = f'http://127.0.0.1:{self.port}'
+                if self.on_colab is True:
+                    return
+                if not os.path.exists("./AI-Horde-Worker"):
+                    return
+                if value is True:
+                    if self._horde_pid is None:
+                        self._horde_pid = "Pending" # Hack to make sure we don't launch twice while it loads
+                        logger.info("Starting Horde bridge")
+                        logger.debug("Clearing command line args in sys.argv before AI Horde Scribe load")
+                        sys_arg_bkp = sys.argv.copy()
+                        sys.argv = sys.argv[:1]
+                        bd_module = importlib.import_module("AI-Horde-Worker.worker.bridge_data.scribe")
+                        bridge_data = bd_module.KoboldAIBridgeData()
+                        sys.argv = sys_arg_bkp
+                        bridge_data.reload_data()
+                        bridge_data.kai_url = f'http://127.0.0.1:{self.port}'
+                        bridge_data.horde_url = self._koboldai_var.horde_url
+                        bridge_data.api_key = self._koboldai_var.horde_api_key
+                        bridge_data.scribe_name = self._koboldai_var.horde_worker_name
+                        bridge_data.max_length = self._koboldai_var.genamt
+                        bridge_data.max_context_length = self._koboldai_var.max_length
+                        bridge_data.disable_terminal_ui = self._koboldai_var.host
+                        if bridge_data.worker_name == "My Awesome Instance":
+                            bridge_data.worker_name = f"KoboldAI UI Instance #{random.randint(-100000000, 100000000)}"
+                        worker_module = importlib.import_module("AI-Horde-Worker.worker.workers.scribe")
+                        self._horde_pid = worker_module.ScribeWorker(bridge_data)
+                        new_thread = threading.Thread(target=self._horde_pid.start)
+                        new_thread.daemon = True
+                        new_thread.start()
 
-                                logger.info(f"Name: {kai_name} on {kai_url}")
-                                threading.Thread(target=self._horde_pid.bridge, args=(1, api_key, kai_name, kai_url, cluster_url, priority_usernames)).run()
-                        else:
-                            if self._horde_pid is not None:
-                                logger.info("Killing Horde bridge")
-                                self._horde_pid.stop()
-                                self._horde_pid = None
+                else:
+                    if self._horde_pid is not None:
+                        logger.info("Killing Horde bridge")
+                        self._horde_pid.stop()
+                        self._horde_pid = None
+
                 
 class KoboldStoryRegister(object):
     def __init__(self, socketio, story_settings, koboldai_vars, tokenizer=None, sequence=[]):
@@ -1413,6 +1454,7 @@ class KoboldStoryRegister(object):
         self.make_audio_thread_slow = None
         self.make_audio_queue_slow = multiprocessing.Queue()
         self.probability_buffer = None
+        self.audio_status = {}
         self.used_sentences = []
         self.min_used_sentence = None
         for item in sequence:
@@ -1572,6 +1614,13 @@ class KoboldStoryRegister(object):
 
             if "Original Text" not in json_data["actions"][item]:
                 json_data["actions"][item]["Original Text"] = json_data["actions"][item]["Selected Text"]
+                
+            if "audio_gen" not in json_data["actions"][item]:
+                json_data["actions"][item]["audio_gen"] = 0
+                
+            if "image_gen" not in json_data["actions"][item]:
+                json_data["actions"][item]["image_gen"] = False
+
 
             temp[int(item)] = json_data['actions'][item]
             if int(item) >= self.action_count-100: #sending last 100 items to UI
@@ -1779,7 +1828,7 @@ class KoboldStoryRegister(object):
         self.show_options(len(self.get_current_options()) > 1)
 
         if len(self.get_current_options()) == 1:
-            logger.warning("Going forward with this text: {}".format(self.get_current_options()[0]["text"]))
+            logger.debug("Going forward with this text: {}".format(self.get_current_options()[0]["text"]))
             self.use_option([x['text'] for x in self.actions[action_step]["Options"]].index(self.get_current_options()[0]["text"]))
 
     def use_option(self, option_number, action_step=None):
@@ -2051,9 +2100,14 @@ class KoboldStoryRegister(object):
         return action_text_split
     
     def gen_audio(self, action_id=None, overwrite=True):
-        if self.story_settings.gen_audio and self._koboldai_vars.experimental_features:
-            if action_id is None:
-                action_id = self.action_count
+        if action_id is None:
+            action_id = self.action_count
+        if overwrite:
+            if action_id != -1:
+                self.actions[action_id]["audio_gen"] = 0
+                basic_send(self._socketio, "story", "set_audio_status", {"id": action_id, "action": self.actions[action_id]})
+        if self.story_settings.gen_audio:
+            
 
             if self.tts_model is None:
                 language = 'en'
@@ -2070,33 +2124,41 @@ class KoboldStoryRegister(object):
                 
             if overwrite or not os.path.exists(filename):
                 if action_id == -1:
-                    self.make_audio_queue.put((self._koboldai_vars.prompt, filename))
+                    self.make_audio_queue.put((self._koboldai_vars.prompt, filename, action_id))
                 else:
-                    self.make_audio_queue.put((self.actions[action_id]['Selected Text'], filename))
-                if self.make_audio_thread_slow is None or not self.make_audio_thread_slow.is_alive():
-                    self.make_audio_thread_slow = threading.Thread(target=self.create_wave_slow, args=(self.make_audio_queue_slow, ))
-                    self.make_audio_thread_slow.start()
+                    self.make_audio_queue.put((self.actions[action_id]['Selected Text'], filename, action_id))
+                if self.make_audio_thread is None or not self.make_audio_thread.is_alive():
+                    self.make_audio_thread = threading.Thread(target=self.create_wave, args=(self.make_audio_queue, ))
+                    self.make_audio_thread.start()
+            elif not overwrite and os.path.exists(filename):
+                if action_id != -1:
+                    self.actions[action_id]["audio_gen"] = 1
             
             if overwrite or not os.path.exists(filename_slow):
                 if action_id == -1:
-                    self.make_audio_queue_slow.put((self._koboldai_vars.prompt, filename_slow))
+                    self.make_audio_queue_slow.put((self._koboldai_vars.prompt, filename_slow, action_id))
                 else:
-                    self.make_audio_queue_slow.put((self.actions[action_id]['Selected Text'], filename_slow))
+                    self.make_audio_queue_slow.put((self.actions[action_id]['Selected Text'], filename_slow, action_id))
                 if self.make_audio_thread_slow is None or not self.make_audio_thread_slow.is_alive():
                     self.make_audio_thread_slow = threading.Thread(target=self.create_wave_slow, args=(self.make_audio_queue_slow, ))
                     self.make_audio_thread_slow.start()
+            elif not overwrite and os.path.exists(filename_slow):
+                if action_id != -1:
+                    self.actions[action_id]["audio_gen"] = 2
+                    basic_send(self._socketio, "story", "set_audio_status", {"id": action_id, "action": self.actions[action_id]})
+                    
                 
     def create_wave(self, make_audio_queue):
         import pydub
         sample_rate = 24000
         speaker = 'en_5'
         while not make_audio_queue.empty():
-            (text, filename) = make_audio_queue.get()
+            (text, filename, action_id) = make_audio_queue.get()
             logger.info("Creating audio for {}".format(os.path.basename(filename)))
             if text.strip() == "":
                 shutil.copy("data/empty_audio.ogg", filename)
             else:
-                if len(text) > 2000:
+                if len(text) > 1000:
                     text = self.sentence_re.findall(text)
                 else:
                     text = [text]
@@ -2111,27 +2173,44 @@ class KoboldStoryRegister(object):
                         output = pydub.AudioSegment(np.int16(audio * 2 ** 15).tobytes(), frame_rate=sample_rate, sample_width=2, channels=channels)
                     else:
                         output = output + pydub.AudioSegment(np.int16(audio * 2 ** 15).tobytes(), frame_rate=sample_rate, sample_width=2, channels=channels)
-                output.export(filename, format="ogg", bitrate="16k")
+                if output is not None:
+                    output.export(filename, format="ogg", bitrate="16k")
+            if action_id != -1 and self.actions[action_id]["audio_gen"] == 0:
+                self.actions[action_id]["audio_gen"] = 1
+                basic_send(self._socketio, "story", "set_audio_status", {"id": action_id, "action": self.actions[action_id]})
     
     def create_wave_slow(self, make_audio_queue_slow):
         import pydub
+        global slow_tts_message_shown
         sample_rate = 24000
         speaker = 'train_daws'
+        if importlib.util.find_spec("tortoise") is None and not slow_tts_message_shown:
+            logger.info("Disabling slow (and higher quality) tts as it's not installed")
+            slow_tts_message_shown=True
         if self.tortoise is None and importlib.util.find_spec("tortoise") is not None:
-           self.tortoise=api.TextToSpeech()
+           self.tortoise=api.TextToSpeech(use_deepspeed=os.environ.get('deepspeed', "false").lower()=="true", kv_cache=os.environ.get('kv_cache', "true").lower()=="true", half=True)
         
         if importlib.util.find_spec("tortoise") is not None:
             voice_samples, conditioning_latents = load_voices([speaker])
             while not make_audio_queue_slow.empty():
                 start_time = time.time()
-                (text, filename) = make_audio_queue_slow.get()
+                (text, filename, action_id) = make_audio_queue_slow.get()
                 text_length = len(text)
                 logger.info("Creating audio for {}".format(os.path.basename(filename)))
                 if text.strip() == "":
                     shutil.copy("data/empty_audio.ogg", filename)
                 else:
-                    if len(text) > 20000:
+                    if len(self.tortoise.tokenizer.encode(text)) > 400:
                         text = self.sentence_re.findall(text)
+                        i=0
+                        while i <= len(text)-2:
+                            if len(self.tortoise.tokenizer.encode(text[i] + text[i+1])) < 400:
+                                text[i] = text[i] + text[i+1]
+                                del text[i+1]
+                            else:
+                                i+=1
+                                    
+                        
                     else:
                         text = [text]
                 output = None
@@ -2142,11 +2221,16 @@ class KoboldStoryRegister(object):
                         output = pydub.AudioSegment(np.int16(audio * 2 ** 15).tobytes(), frame_rate=sample_rate, sample_width=2, channels=channels)
                     else:
                         output = output + pydub.AudioSegment(np.int16(audio * 2 ** 15).tobytes(), frame_rate=sample_rate, sample_width=2, channels=channels)
-                output.export(filename, format="ogg", bitrate="16k")
+                if output is not None:
+                    output.export(filename, format="ogg", bitrate="16k")
+                if action_id != -1:
+                    self.actions[action_id]["audio_gen"] = 2
+                    basic_send(self._socketio, "story", "set_audio_status", {"id": action_id, "action": self.actions[action_id]})
                 logger.info("Slow audio took {} for {} characters".format(time.time()-start_time, text_length))
     
     def gen_all_audio(self, overwrite=False):
-        if self.story_settings.gen_audio and self._koboldai_vars.experimental_features:
+        if self.story_settings.gen_audio:
+            logger.info("Generating audio for any missing actions")
             for i in reversed([-1]+list(self.actions.keys())):
                 self.gen_audio(i, overwrite=False)
         #else:
@@ -2575,7 +2659,7 @@ class KoboldWorldInfo(object):
                 with open(image_path, "wb") as file:
                     file.write(base64.b64decode(image_b64))
         
-        data["entries"] = {k: self.upgrade_entry(v) for k,v in data["entries"].items()}
+        data["entries"] = {int(k): self.upgrade_entry(v) for k,v in data["entries"].items()}
         
         #Add the item
         start_time = time.time()
@@ -2656,13 +2740,13 @@ class KoboldWorldInfo(object):
         self.story_settings.worldinfo.sort(key=lambda x: mapping[x["folder"]] if x["folder"] is not None else float("inf"))
         
         #self.wifolders_d = {}     # Dictionary of World Info folder UID-info pairs
-        self.story_settings.wifolders_d = {str(folder_entries[x]): {'name': x, 'collapsed': False} for x in folder_entries if x != "root"}
+        self.story_settings.wifolders_d = {folder_entries[x]: {'name': x, 'collapsed': False} for x in folder_entries if x != "root"}
         
         #self.worldinfo_u = {}     # Dictionary of World Info UID - key/value pairs
-        self.story_settings.worldinfo_u = {str(y["uid"]): y for x in folder_entries for y in self.story_settings.worldinfo if y["folder"] == (folder_entries[x] if x != "root" else None)}
+        self.story_settings.worldinfo_u = {y["uid"]: y for x in folder_entries for y in self.story_settings.worldinfo if y["folder"] == (folder_entries[x] if x != "root" else None)}
         
         #self.wifolders_u = {}     # Dictionary of pairs of folder UID - list of WI UID
-        self.story_settings.wifolders_u = {str(folder_entries[x]): [y for y in self.story_settings.worldinfo if y['folder'] == folder_entries[x]] for x in folder_entries if x != "root"}
+        self.story_settings.wifolders_u = {folder_entries[x]: [y for y in self.story_settings.worldinfo if y['folder'] == folder_entries[x]] for x in folder_entries if x != "root"}
         
     def reset_used_in_game(self):
         for key in self.world_info:

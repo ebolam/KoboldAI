@@ -98,9 +98,9 @@ def replaceblanklines(txt):
 #==================================================================#
 def removespecialchars(txt, koboldai_vars=None):
     if koboldai_vars is None or koboldai_vars.actionmode == 0:
-        txt = re.sub(r"[#/@%<>{}+=~|\^]", "", txt)
+        txt = re.sub(r"[/@%<>{}+=~|\^]", "", txt)
     else:
-        txt = re.sub(r"[#/@%{}+=~|\^]", "", txt)
+        txt = re.sub(r"[/@%{}+=~|\^]", "", txt)
     return txt
 
 #==================================================================#
@@ -688,7 +688,7 @@ def applyoutputformatting(txt, no_sentence_trimming=False, no_single_line=False)
     txt = txt.replace("</s>", "")
 
     # Use standard quotes and apostrophes
-    txt = fixquotes(txt)
+    # txt = fixquotes(txt)
 
     # Adventure mode clipping of all characters after '>'
     if(koboldai_vars.adventure):

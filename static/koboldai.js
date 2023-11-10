@@ -45,6 +45,7 @@ socket.on("show_error_notification", function(data) { reportError(data.title, da
 socket.on("generated_wi", showGeneratedWIData);
 socket.on("stream_tokens", stream_tokens);
 socket.on("show_options", show_options);
+socket.on("set_audio_status", set_audio_status);
 //socket.onAny(function(event_name, data) {console.log({"event": event_name, "class": data.classname, "data": data});});
 
 // Must be done before any elements are made; we track their changes.
@@ -94,7 +95,7 @@ var supported_gen_modes = [];
 var privacy_mode_enabled = false;
 var attention_wanting_wi_bar = null;
 var ai_busy = false;
-var can_show_options = false;
+var can_show_options = true;
 
 var streaming = {
 	windowOpen: false,
@@ -148,6 +149,7 @@ const context_menu_actions = {
 		{label: "Add to World Info Entry", icon: "auto_stories", enabledOn: "SELECTION", click: push_selection_to_world_info},
 		{label: "Add as Bias", icon: "insights", enabledOn: "SELECTION", click: push_selection_to_phrase_bias},
 		{label: "Retry from here", icon: "refresh", enabledOn: "CARET", click: retry_from_here},
+		{label: "Generate image for here", icon: "image", enabledOn: "CARET", click: generate_image},
 		null,
 		{label: "Take Screenshot", icon: "screenshot_monitor", enabledOn: "SELECTION", click: screenshot_selection},
 		// Not implemented! See view_selection_probabiltiies
@@ -637,6 +639,7 @@ function process_actions_data(data) {
 		actions_data[parseInt(action.id)] = action.action;
 		do_story_text_updates(action);
 		create_options(action);
+		set_audio_status(action);
 	}
 	
 	clearTimeout(game_text_scroll_timeout);
@@ -646,6 +649,26 @@ function process_actions_data(data) {
 	hide_show_prompt();
 	//console.log("Took "+((Date.now()-start_time)/1000)+"s to process");
 	
+}
+
+function set_audio_status(action) {
+	if (!('audio_gen' in action.action)) {
+		action.action.audio_gen = 0;
+	}
+	if (!(document.getElementById("audio_gen_status_"+action.id))) {
+		sp = document.createElement("SPAN");
+		sp.id = "audio_gen_status_"+action.id
+		sp.classList.add("audio_status_action");
+		sp.setAttribute("status", -1);
+		document.getElementById("audio_status").appendChild(sp);
+	}
+	document.getElementById("audio_gen_status_"+action.id).setAttribute("status", action.action.audio_gen);
+	
+	//Delete empty actions
+	if (action.action['Selected Text'] == "") {
+		console.log("disabling status");
+		document.getElementById("audio_gen_status_"+action.id).setAttribute("status", -1);
+	}
 }
 
 function parseChatMessages(text) {
@@ -703,9 +726,9 @@ function do_story_text_updates(action) {
 			item.classList.add("rawtext");
 			item.setAttribute("chunk", action.id);
 			item.setAttribute("tabindex", parseInt(action.id)+1);
-			//item.addEventListener("focus", (event) => {
-			//	set_edit(event.target);
-			//});
+			item.addEventListener("focus", (event) => {
+				set_image_action(action.id);
+			});
 			
 			//need to find the closest element
 			closest_element = document.getElementById("story_prompt");
@@ -1387,6 +1410,29 @@ function redrawPopup() {
 				}
 				this.parentElement.classList.add("selected");
 			};
+			td.ondblclick = function () {
+				let accept = document.getElementById("popup_accept");
+				if (this.getAttribute("valid") == "true") {
+					accept.classList.remove("disabled");
+					accept.disabled = false;
+					accept.setAttribute("selected_value", this.id);
+					socket.emit(document.getElementById("popup_accept").getAttribute("emit"), this.id);
+					closePopups();
+				} else {
+					accept.setAttribute("selected_value", "");
+					accept.classList.add("disabled");
+					accept.disabled = true;
+					if (this.getAttribute("folder") == "true") {
+						socket.emit("popup_change_folder", this.id);
+					}
+				}
+
+				let popup_list = document.getElementById('popup_list').getElementsByClassName("selected");
+				for (item of popup_list) {
+					item.classList.remove("selected");
+				}
+				this.parentElement.classList.add("selected");
+			};
 			tr.append(td);
 		}
 
@@ -1806,31 +1852,6 @@ function model_settings_checker() {
 			valid = (check_value < this.check_data['value']);
 		}
 		if (valid || missing_element) {
-			//if we are supposed to refresh when this value changes we'll resubmit
-			if ((this.getAttribute("refresh_model_inputs") == "true") && !missing_element && !this.noresubmit) {
-				//get an object of all the input settings from the user
-				data = {}
-				settings_area = document.getElementById(document.getElementById("modelplugin").value + "_settings_area");
-				if (settings_area) {
-					for (const element of settings_area.querySelectorAll(".model_settings_input:not(.hidden)")) {
-						var element_data = element.value;
-						if (element.getAttribute("data_type") == "int") {
-							element_data = parseInt(element_data);
-						} else if (element.getAttribute("data_type") == "float") {
-							element_data = parseFloat(element_data);
-						} else if (element.getAttribute("data_type") == "bool") {
-							element_data = element.checked;
-						}
-						data[element.id.split("|")[1].replace("_value", "")] = element_data;
-					}
-				}
-				data = {...data, ...selected_model_data};
-				
-				data['plugin'] = document.getElementById("modelplugin").value;
-				data['valid_backends'] = getOptions("modelplugin");
-				
-				socket.emit("resubmit_model_info", data);
-			}
 			if ('sum' in this.check_data) {
 				for (const temp of this.check_data['sum']) {
 					if (document.getElementById(this.id.split("|")[0] +"|"  + temp + "_value")) {
@@ -1898,6 +1919,32 @@ function model_settings_checker() {
 		}
 		
 		
+	}
+	
+	//if we are supposed to refresh when this value changes we'll resubmit
+	if ((this != window) && (this.getAttribute("refresh_model_inputs") == "true") && !missing_element && !this.noresubmit) {
+		//get an object of all the input settings from the user
+		data = {}
+		settings_area = document.getElementById(document.getElementById("modelplugin").value + "_settings_area");
+		if (settings_area) {
+			for (const element of settings_area.querySelectorAll(".model_settings_input:not(.hidden)")) {
+				var element_data = element.value;
+				if (element.getAttribute("data_type") == "int") {
+					element_data = parseInt(element_data);
+				} else if (element.getAttribute("data_type") == "float") {
+					element_data = parseFloat(element_data);
+				} else if (element.getAttribute("data_type") == "bool") {
+					element_data = element.checked;
+				}
+				data[element.id.split("|")[1].replace("_value", "")] = element_data;
+			}
+		}
+		data = {...data, ...selected_model_data};
+		
+		data['plugin'] = document.getElementById("modelplugin").value;
+		data['valid_backends'] = getOptions("modelplugin");
+		
+		socket.emit("resubmit_model_info", data);
 	}
 }
 
@@ -3419,7 +3466,7 @@ function fix_dirty_game_text() {
 
 	if (dirty_chunks.includes("game_text")) {
 		dirty_chunks = dirty_chunks.filter(item => item != "game_text");
-		console.log("Firing Fix messed up text");
+		//console.log("Firing Fix messed up text");
 		//Fixing text outside of chunks
 		for (node of game_text.childNodes) {
 			if ((!(node instanceof HTMLElement) || !node.hasAttribute("chunk")) && (node.textContent.trim() != "")) {
@@ -3430,7 +3477,7 @@ function fix_dirty_game_text() {
 				} else {
 					node_text = node.data;
 				}
-				if ((!(node.nextElementSibling) || !(dirty_chunks.includes(node.nextElementSibling.getAttribute("chunk"))) || dirty_chunks.includes(node.previousElementSibling.getAttribute("chunk"))) && (node.previousElementSibling)) {
+								if ((!(node.nextElementSibling) || !(dirty_chunks.includes(node.nextElementSibling.getAttribute("chunk"))) || dirty_chunks.includes(node.previousElementSibling.getAttribute("chunk"))) && (node.previousElementSibling)) {
 					node.previousElementSibling.innerText = node.previousElementSibling.innerText + node_text;
 					if (!dirty_chunks.includes(node.previousElementSibling.getAttribute("chunk"))) {
 						dirty_chunks.push(node.previousElementSibling.getAttribute("chunk"));
@@ -3766,6 +3813,21 @@ function stop_tts() {
 	}
 }
 
+function download_tts() {
+	document.getElementById("download_tts").innerText = "hourglass_empty";
+	socket.emit("gen_full_audio", {}, download_actual_file_tts);
+}
+
+function download_actual_file_tts(data) {
+	if (data) {
+		var link = document.createElement("a");
+		link.download = document.getElementsByClassName("var_sync_story_story_name ")[0].text+".ogg";
+		link.href = "/audio_full";
+		link.click();
+		document.getElementById("download_tts").innerText = "download";
+	}
+}
+
 function finished_tts() {
 	next_action = parseInt(document.getElementById("reader").getAttribute("action_id"))+1;
 	action_count = parseInt(document.getElementById("action_count").textContent);
@@ -3796,6 +3858,29 @@ function tts_playing() {
 	}
 	if (action) {
 		action.classList.add("tts_playing");
+	}
+}
+
+function set_image_action(action_id) {
+	console.log(action_id);
+	socket.emit("get_story_image", {action_id: action_id}, change_image);
+}
+
+function change_image(data) {
+	image_area = document.getElementById("action image");
+
+	let maybeImage = image_area.getElementsByClassName("action_image")[0];
+	if (maybeImage) maybeImage.remove();
+
+	$el("#image-loading").classList.add("hidden");
+
+	if (data != undefined) {
+		var image = new Image();
+		image.src = 'data:image/png;base64,'+data;
+		image.classList.add("action_image");
+		image.setAttribute("context-menu", "generated-image");
+		image.addEventListener("click", imgGenView);
+		image_area.appendChild(image);
 	}
 }
 
@@ -4962,11 +5047,17 @@ function toggle_flyout_right(x) {
 		x.classList.remove("change");
 		document.getElementById("rightSideMenu").classList.remove("open");
 		document.getElementById("main-grid").classList.remove("story_menu-open");
+		//need to set the layer priority back down
+		document.getElementById("rightSideMenu").classList.remove("high_z");
+		document.getElementById("story_menu_icon").classList.remove("high_z");
 	} else {
 		x.classList.add("change");
 		document.getElementById("rightSideMenu").classList.add("open");
 		document.getElementById("main-grid").classList.add("story_menu-open");
 		document.getElementById("story_menu_pin").classList.remove("hidden");
+		//need to set the layer priority up (due to mobile overlap
+		document.getElementById("rightSideMenu").classList.add("high_z");
+		document.getElementById("story_menu_icon").classList.add("high_z");
 	}
 }
 
@@ -7019,6 +7110,22 @@ $el("#generate-image-button").addEventListener("click", function() {
 	$el("#image-loading").classList.remove("hidden");
 	socket.emit("generate_image", {});
 });
+
+function generate_image() {
+	let chunk = null;
+	for (element of document.getElementsByClassName("editing")) {
+		if (element.id == 'story_prompt') {
+			chunk = -1
+		} else {
+			chunk = parseInt(element.id.split(" ").at(-1));
+		}
+	}
+	if (chunk != null) {
+		socket.emit("generate_image", {action_id: chunk});
+	}
+	
+	
+}
 
 /* -- Shiny New Chat -- */
 function addMessage(author, content, actionId, afterMsgEl=null, time=null) {

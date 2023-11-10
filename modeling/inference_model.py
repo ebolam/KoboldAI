@@ -13,6 +13,7 @@ import transformers
 from transformers import (
     GPT2Tokenizer,
     AutoTokenizer,
+    LlamaTokenizer,
 )
 from modeling.stoppers import Stoppers
 from modeling.tokenizer import GenericTokenizer
@@ -171,6 +172,7 @@ class InferenceModel:
     """Root class for all models."""
 
     def __init__(self) -> None:
+        self.abort = False
         self.gen_state = {}
         self.post_token_hooks = []
         self.stopper_hooks = []
@@ -250,9 +252,10 @@ class InferenceModel:
                 location, use_fast=False, **std_kwargs
             ),
             lambda: AutoTokenizer.from_pretrained(location, **std_kwargs),
-            # Fallback to GPT2Tokenizer
+            # Attempt more basic GPT2 Tokenizer
             lambda: GPT2Tokenizer.from_pretrained(location, **std_kwargs),
-            lambda: GPT2Tokenizer.from_pretrained("gpt2", **std_kwargs),
+            # Fallback to generic LLaMA Tokenizer
+            lambda: LlamaTokenizer.from_pretrained("KoboldAI/llama2-tokenizer", use_fast=False, **std_kwargs),
         ]
 
         for i, try_get_tokenizer in enumerate(suppliers):
@@ -669,6 +672,9 @@ class InferenceModel:
         for hook in self.post_token_hooks:
             hook(self, input_ids)
 
+    def abort_generation(self, abort=True):
+        self.abort=abort
+    
     def get_supported_gen_modes(self) -> List[GenerationMode]:
         """Returns a list of compatible `GenerationMode`s for the current model.
 
