@@ -1872,7 +1872,7 @@ def load_model(model_backend, initial_load=False):
         logger.message(f"KoboldAI has finished loading and is available at the following link for the Classic UI: {koboldai_vars.cloudflare_link}/classic")
         logger.message(f"KoboldAI has finished loading and is available at the following link for KoboldAI Lite: {koboldai_vars.cloudflare_link}/lite")
         logger.message(f"KoboldAI has finished loading and is available at the following link for the API: {koboldai_vars.cloudflare_link}/api")
-
+    koboldai_vars.reset_model_unload_timer()
 
 # Setup IP Whitelisting
 # Define a function to check if IP is allowed
@@ -6379,8 +6379,23 @@ def UI_2_unpause_model(data):
     if 'model' in globals():
         model.load()
         koboldai_vars.model_status="loaded"
+
+#==================================================================#
+# Auto-pause option
+#==================================================================#
+@app.before_request
+@logger.catch
+def every_page_load():
+    koboldai_vars.reset_model_unload_timer()
+    
         
-        
+def check_model_unload_timer():
+    if koboldai_vars._model_unload_timer is not None:
+        if datetime.datetime.now() > koboldai_vars._model_unload_timer:
+            logger.info(koboldai_vars._model_unload_timer)
+            UI_2_pause_model(None)
+            koboldai_vars._model_unload_timer = None
+
 
 #==================================================================#
 # Event triggered when load story is clicked
@@ -6882,6 +6897,7 @@ def socket_io_relay(queue, socketio):
                 data = queue.get()
                 socketio.emit(data[0], data[1], **data[2])
         time.sleep(0.2)
+        check_model_unload_timer()
         
 
 
