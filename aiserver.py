@@ -8087,7 +8087,7 @@ def UI_2_stt(data):
                 emit("tts", "AI is busy. Try again later.")
             else:
                 emit("tts", "OK")
-                text = UI_2_submit({'data': "", 'theme': "", 'gen_mode': None})
+                text = UI_2_submit({'data': "", 'theme': "", 'gen_mode': None, 'instruction': ''})
                 emit("tts", "New Text: {}".format(text))
         else:
             logger.warning("Command '{}' is not one of the options for Speach to Text.".format(command))
@@ -8097,7 +8097,7 @@ def UI_2_stt(data):
             emit("tts", "AI is busy. Try again later.")
         else:
             emit("tts", "OK")
-            text = UI_2_submit({'data': result['text'].strip(), 'theme': "", 'gen_mode': None})
+            text = UI_2_submit({'data': result['text'].strip(), 'theme': "", 'gen_mode': None, 'instruction': ''})
             emit("tts", "New Text: {}".format(text))
 
 #==================================================================#
