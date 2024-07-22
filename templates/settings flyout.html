@@ -87,7 +87,11 @@
 			<hr/>
 		</div>
 		<div id="stt">
-			{% include 'voice-mode.html' %}
+			<button class="settings_button" onclick='openPopup("voice-control-popup");'>
+				<span class="material-icons-outlined cursor" tooltip="Voice Mode">record_voice_over</span>
+				<span class="button_label">Voice Mode</span>
+			</button> 
+			<hr>
 		</div>
 		<div id="tts" class="var_sync_alt_system_experimental_features">
 			<audio id="reader" preload=none src="/audio" onended="finished_tts()" onplay="tts_playing()" />

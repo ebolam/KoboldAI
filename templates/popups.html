@@ -391,6 +391,19 @@
 		</div>
 	</div>
 	
+	<!---------------- Voice Control ---------------------->
+	<div id="voice-control-popup" class="popup-window popup">
+		<div class="title">
+			<div class="popuptitletext">Voice Control</div>
+		</div>
+		<div id="popup_list_area" class="popup_list_area" style="overflow-x: scroll; height: 100%;">
+			{% include 'voice-mode.html' %}
+		</div>
+		<div class="popup_load_cancel">
+			<button type="button" class="btn btn-primary popup_load_cancel_button" onclick="closePopups();">Ok</button>
+		</div>
+	</div>
+	
 </div>
 
 <div id="notification-container"></div>

@@ -1,13 +1,6 @@
 <script src="static/voice-mode/recorder.min.js"></script>
-<h2>Recorder Commands</h2>
-<div style="display: flex; justify-content: space-between; padding: 10px;">
-	<span style="justify-content: flex-start;">
-		<button id="start" style="width: 100px; height: 100px;" class="settings_button">start</button>
-	</span>
-	<span style="justify-content: flex-end;">
-		<button id="stopButton" style="width: 100px; height: 100px;" class="settings_button disabled">stop</button>
-	</span>
-</div>
+<button id="start" style="width: 100%; height: 80%;" class="settings_button">start</button>
+<button id="stopButton" style="width: 100%; height: 80%;" class="settings_button hidden">stop</button>
 
 <script>
 	var recorder = new Recorder({
@@ -27,13 +20,13 @@
 	});
 
 	recorder.onstart = function(){
-		start.classList.add("disabled");
-		stopButton.classList.remove("disabled")
+		start.classList.add("hidden");
+		stopButton.classList.remove("hidden")
 	};
 
 	recorder.onstop = function(){
-		start.classList.remove("disabled");
-		stopButton.classList.add("disabled")
+		start.classList.remove("hidden");
+		stopButton.classList.add("hidden")
 	};
 
 	recorder.ondataavailable = function( typedArray ){
@@ -43,4 +36,3 @@
 
 
 </script>
-<hr>
