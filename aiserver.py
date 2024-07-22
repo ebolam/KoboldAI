@@ -8058,14 +8058,14 @@ def UI_2_stt(data):
     global stt_model
     if stt_model is None:
         import whisper
-        stt_model = whisper.load_model("base")
+        stt_model = whisper.load_model("base", download_root="./functional_models")
     raw_wav = data['audio_data']
     with open('voice.wav', 'wb') as audio:
         audio.write(raw_wav)
     result = stt_model.transcribe('voice.wav')
     if result['text'].strip().lower()[:7] == "command":
         command = result['text'].strip()[7:].strip().replace(".", "").replace("?", "").replace("!", "").lower()
-        regex = re.compile('[^a-zA-Z]')
+        regex = re.compile('[^a-zA-Z0-9]')
         command = regex.sub('', command).strip()
         if command == "help":
             emit("tts", "Possible commands are back, submit, and retry")
@@ -8082,6 +8082,14 @@ def UI_2_stt(data):
                 emit("tts", "OK")
                 text = UI_2_retry(None)
                 emit("tts", "New Text: {}".format(text))
+        elif command[:4] == "read" or command[:3] == "say":
+            position = re.compile('[^0-9]').sub('', command).strip()
+            if position == '':
+                position = 1
+            else:
+                position = int(position)
+            position = -position if "last" in result['text'].strip().lower() else position
+            emit("tts", "Story: {}".format("".join(vars.actions[position:])))
         elif command == "submit":
             if koboldai_vars.aibusy:
                 emit("tts", "AI is busy. Try again later.")
