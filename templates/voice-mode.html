@@ -1,0 +1,46 @@
+<script src="static/voice-mode/recorder.min.js"></script>
+<h2>Recorder Commands</h2>
+<div style="display: flex; justify-content: space-between; padding: 10px;">
+	<span style="justify-content: flex-start;">
+		<button id="start" style="width: 100px; height: 100px;" class="settings_button">start</button>
+	</span>
+	<span style="justify-content: flex-end;">
+		<button id="stopButton" style="width: 100px; height: 100px;" class="settings_button disabled">stop</button>
+	</span>
+</div>
+
+<script>
+	var recorder = new Recorder({
+		monitorGain: 0,
+		recordingGain: 1,
+		numberOfChannels: 1,
+		//wavBitDepth: 8,
+		encoderSampleRate: 24000,
+		//encoderPath: "static/voice-mode/waveWorker.min.js"
+		encoderPath: "static/voice-mode/encoderWorker.min.js"
+	});
+
+	stopButton.addEventListener( "click", function(){ recorder.stop(); });
+	start.addEventListener( "click", function(){ 
+		tts.cancel()
+		recorder.start();
+	});
+
+	recorder.onstart = function(){
+		start.classList.add("disabled");
+		stopButton.classList.remove("disabled")
+	};
+
+	recorder.onstop = function(){
+		start.classList.remove("disabled");
+		stopButton.classList.add("disabled")
+	};
+
+	recorder.ondataavailable = function( typedArray ){
+		var dataBlob = new Blob( [typedArray], { type: 'audio/wav' } );
+		socket.emit('stt', {'audio_data': dataBlob});
+	};
+
+
+</script>
+<hr>

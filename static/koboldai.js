@@ -46,6 +46,12 @@ socket.on("generated_wi", showGeneratedWIData);
 socket.on("stream_tokens", stream_tokens);
 socket.on("show_options", show_options);
 socket.on("set_audio_status", set_audio_status);
+socket.on('tts', function(data){
+	var utterance = new SpeechSynthesisUtterance();
+	utterance.text = data;
+	tts.speak(utterance);
+});
+
 //socket.onAny(function(event_name, data) {console.log({"event": event_name, "class": data.classname, "data": data});});
 
 // Must be done before any elements are made; we track their changes.
@@ -270,6 +276,7 @@ var setup_missing_wi_toggles_timeout;
 var var_processing_time = 0;
 var finder_last_input;
 var current_action;
+var tts = window.speechSynthesis;
 //-----------------------------------Server to UI  Functions-----------------------------------------------
 function connect() {
 	console.log("connected");

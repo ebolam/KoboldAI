@@ -3349,7 +3349,7 @@ def actionsubmit(
                 koboldai_vars.prompt = data
                 # Clear the startup text from game screen
                 emit('from_server', {'cmd': 'updatescreen', 'gamestarted': False, 'data': 'Please wait, generating story...'}, broadcast=True, room="UI_1")
-                calcsubmit("", gen_mode=gen_mode) # Run the first action through the generator
+                tts_text = calcsubmit("", gen_mode=gen_mode) # Run the first action through the generator
                 if(not model.abort and koboldai_vars.lua_koboldbridge.restart_sequence is not None and len(koboldai_vars.genseqs) == 0):
                     data = ""
                     force_submit = True
@@ -3415,7 +3415,7 @@ def actionsubmit(
 
             if(not no_generate and not koboldai_vars.noai and koboldai_vars.lua_koboldbridge.generating):
                 # Off to the tokenizer!
-                calcsubmit("", gen_mode=gen_mode)
+                tts_text = calcsubmit("", gen_mode=gen_mode)
                 if(not model.abort and koboldai_vars.lua_koboldbridge.restart_sequence is not None and len(koboldai_vars.genseqs) == 0):
                     data = ""
                     force_submit = True
@@ -3453,6 +3453,7 @@ def actionsubmit(
                 set_aibusy(0)
                 emit('from_server', {'cmd': 'scrolldown', 'data': ''}, broadcast=True, room="UI_1")
                 break
+    return tts_text
 
 def apiactionsubmit_generate(txt, minimum, maximum):
     koboldai_vars.generated_tkns = 0
@@ -3812,9 +3813,10 @@ def calcsubmit(txt, gen_mode=GenerationMode.STANDARD):
         logger.debug("Submit: experimental_features time {}s".format(time.time()-start_time))
         
         start_time = time.time()
-        generate(subtxt, min, max, found_entries, gen_mode=gen_mode)
+        tts_text = generate(subtxt, min, max, found_entries, gen_mode=gen_mode)
         logger.debug("Submit: generate time {}s".format(time.time()-start_time))
         attention_bias.attention_bias = None
+        return tts_text
 
                     
     # For InferKit web API
@@ -3946,7 +3948,7 @@ def generate(txt, minimum, maximum, found_entries=None, gen_mode=GenerationMode.
         genout = [{"generated_text": utils.decodenewlines(tokenizer.decode(tokens[-already_generated:]))} for tokens in genout]
     
     if(len(genout) == 1):
-        genresult(genout[0]["generated_text"])
+        tts_text = genresult(genout[0]["generated_text"])
     else:
         koboldai_vars.actions.append_options([utils.applyoutputformatting(x["generated_text"]) for x in genout])
         genout = [{"generated_text": x['text']} for x in koboldai_vars.actions.get_current_options()]
@@ -3954,6 +3956,7 @@ def generate(txt, minimum, maximum, found_entries=None, gen_mode=GenerationMode.
             genresult(genout[koboldai_vars.lua_koboldbridge.restart_sequence-1]["generated_text"])
         else:
             genselect(genout)
+        tts_text = None
     
     # Clear CUDA cache again if using GPU
     if(koboldai_vars.hascuda and (koboldai_vars.usegpu or koboldai_vars.breakmodel)):
@@ -3967,6 +3970,7 @@ def generate(txt, minimum, maximum, found_entries=None, gen_mode=GenerationMode.
     maybe_review_story()
 
     set_aibusy(0)
+    return tts_text
 
 #==================================================================#
 #  Deal with a single return sequence from generate()
@@ -3993,6 +3997,7 @@ def genresult(genout, flash=True, ignore_formatting=False):
     if(flash):
         emit('from_server', {'cmd': 'texteffect', 'data': koboldai_vars.actions.get_last_key() + 1 if len(koboldai_vars.actions) else 0}, broadcast=True, room="UI_1")
     send_debug()
+    return genout
 
 #==================================================================#
 #  Send generator sequences to the UI for selection
@@ -6210,7 +6215,8 @@ def UI_2_submit(data):
         new_action_text += "{{[OUTPUT]}}"
         
 
-    actionsubmit(new_action_text, actionmode=koboldai_vars.actionmode, gen_mode=gen_mode)
+    text = actionsubmit(new_action_text, actionmode=koboldai_vars.actionmode, gen_mode=gen_mode)
+    return text
 
  #==================================================================#
 # Event triggered when user clicks the submit button
@@ -6268,7 +6274,8 @@ def UI_2_retry(data):
     koboldai_vars.actions.clear_unused_options()
     koboldai_vars.lua_koboldbridge.feedback = None
     koboldai_vars.recentrng = koboldai_vars.recentrngm = None
-    actionsubmit("", actionmode=koboldai_vars.actionmode)
+    text = actionsubmit("", actionmode=koboldai_vars.actionmode)
+    return text
     
 #==================================================================#
 # Event triggered when user clicks the load model button
@@ -8102,6 +8109,57 @@ def UI_2_action_image():
         return send_file(
                  "static/blank.png", 
                  mimetype="image/png")
+
+#==================================================================#
+# Speach to Text
+#==================================================================#
+stt_model = None
+@socketio.on('stt')
+def UI_2_stt(data):
+    global stt_model
+    if stt_model is None:
+        import whisper
+        stt_model = whisper.load_model("base")
+    raw_wav = data['audio_data']
+    with open('voice.wav', 'wb') as audio:
+        audio.write(raw_wav)
+    result = stt_model.transcribe('voice.wav')
+    if result['text'].strip().lower()[:7] == "command":
+        command = result['text'].strip()[7:].strip().replace(".", "").replace("?", "").replace("!", "").lower()
+        regex = re.compile('[^a-zA-Z]')
+        command = regex.sub('', command).strip()
+        if command == "help":
+            emit("tts", "Possible commands are back, submit, and retry")
+        elif command == "back":
+            if koboldai_vars.aibusy:
+                emit("tts", "AI is busy. Try again later.")
+            else:
+                emit("tts", "OK")
+                UI_2_back(None)
+        elif command == "retry":
+            if koboldai_vars.aibusy:
+                emit("tts", "AI is busy. Try again later.")
+            else:
+                emit("tts", "OK")
+                text = UI_2_retry(None)
+                emit("tts", "New Text: {}".format(text))
+        elif command == "submit":
+            if koboldai_vars.aibusy:
+                emit("tts", "AI is busy. Try again later.")
+            else:
+                emit("tts", "OK")
+                text = UI_2_submit({'data': "", 'theme': "", 'gen_mode': None})
+                emit("tts", "New Text: {}".format(text))
+        else:
+            logger.warning("Command '{}' is not one of the options for Speach to Text.".format(command))
+            emit("tts", "Command {} is not one of the options. Options are back, submit, and retry".format(command))
+    elif result['text'].strip() != "":
+        if koboldai_vars.aibusy:
+            emit("tts", "AI is busy. Try again later.")
+        else:
+            emit("tts", "OK")
+            text = UI_2_submit({'data': result['text'].strip(), 'theme': "", 'gen_mode': None})
+            emit("tts", "New Text: {}".format(text))
 
 #==================================================================#
 # display messages if they have never been sent before on this install
