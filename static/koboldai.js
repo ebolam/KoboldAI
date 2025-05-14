@@ -282,7 +282,7 @@ function connect() {
 	console.log("connected");
 	//reset_story();
 	if (initial_socketio_connection_occured) {
-		location.reload();
+		//location.reload();
 	}
 	initial_socketio_connection_occured = true;
 	for (item of document.getElementsByTagName("body")) {
