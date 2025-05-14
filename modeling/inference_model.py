@@ -7,17 +7,8 @@ from typing import List, Optional, Union
 from enum import Enum
 from logger import logger
 
-import torch
 import numpy as np
-import transformers
-from transformers import (
-    GPT2Tokenizer,
-    AutoTokenizer,
-    LlamaTokenizer,
-)
-from modeling.stoppers import Stoppers
 from modeling.tokenizer import GenericTokenizer
-from modeling import logits_processors
 
 import utils
 
@@ -37,52 +28,7 @@ class use_core_manipulations:
     old_get_stopping_criteria: callable = None
 
     def __enter__(self):
-        if use_core_manipulations.get_logits_processor:
-            use_core_manipulations.old_get_logits_processor = (
-                transformers.GenerationMixin._get_logits_processor
-            )
-            transformers.GenerationMixin._get_logits_processor = (
-                use_core_manipulations.get_logits_processor
-            )
-
-        if use_core_manipulations.sample:
-            use_core_manipulations.old_sample = transformers.GenerationMixin.sample
-            transformers.GenerationMixin.sample = use_core_manipulations.sample
-
-        if use_core_manipulations.get_stopping_criteria:
-            use_core_manipulations.old_get_stopping_criteria = (
-                transformers.GenerationMixin._get_stopping_criteria
-            )
-            transformers.GenerationMixin._get_stopping_criteria = (
-                use_core_manipulations.get_stopping_criteria
-            )
         return self
-
-    def __exit__(self, exc_type, exc_value, exc_traceback):
-        if use_core_manipulations.old_get_logits_processor:
-            transformers.GenerationMixin._get_logits_processor = (
-                use_core_manipulations.old_get_logits_processor
-            )
-        else:
-            assert (
-                not use_core_manipulations.get_logits_processor
-            ), "Patch leak: THE MONKEYS HAVE ESCAPED"
-
-        if use_core_manipulations.old_sample:
-            transformers.GenerationMixin.sample = use_core_manipulations.old_sample
-        else:
-            assert (
-                not use_core_manipulations.sample
-            ), "Patch leak: THE MONKEYS HAVE ESCAPED"
-
-        if use_core_manipulations.old_get_stopping_criteria:
-            transformers.GenerationMixin._get_stopping_criteria = (
-                use_core_manipulations.old_get_stopping_criteria
-            )
-        else:
-            assert (
-                not use_core_manipulations.get_stopping_criteria
-            ), "Patch leak: THE MONKEYS HAVE ESCAPED"
 
 
 class GenerationResult:
@@ -174,13 +120,6 @@ class InferenceModel:
     def __init__(self) -> None:
         self.abort = False
         self.gen_state = {}
-        self.post_token_hooks = []
-        self.stopper_hooks = []
-        self.logits_processors = [
-            logits_processors.LuaIntegration(),
-            logits_processors.PhraseBiasLogitsProcessor(),
-            logits_processors.ProbabilityVisualization(),
-        ]
         self.tokenizer = None
         self.capabilties = ModelCapabilities()
         self.model_name = "Not Defined"
@@ -196,14 +135,7 @@ class InferenceModel:
             setattr(self, parameter, parameters[parameter])
         return
 
-    def get_auxilary_device(self) -> Union[str, int, torch.device]:
-        """Get device auxilary tensors like inputs should be stored on."""
-
-        # NOTE: TPU isn't a torch device, so TPU stuff gets sent to CPU.
-        if utils.koboldai_vars.hascuda and utils.koboldai_vars.usegpu:
-            return utils.koboldai_vars.gpu_device
-        elif utils.koboldai_vars.hascuda:
-            return "cuda"
+    def get_auxilary_device(self) -> Union[str, int]:
         return "cpu"
 
     def load(self, save_model: bool = False, initial_load: bool = False) -> None:
@@ -241,31 +173,7 @@ class InferenceModel:
             AutoTokenizer: Tokenizer deemed fit for the location string. May be a fallback tokenizer.
         """
 
-        std_kwargs = {"revision": utils.koboldai_vars.revision, "cache_dir": "cache"}
-
-        suppliers = [
-            # Fast tokenizer disabled by default as per HF docs:
-            # > Note: Make sure to pass use_fast=False when loading
-            #   OPT’s tokenizer with AutoTokenizer to get the correct
-            #   tokenizer.
-            lambda: AutoTokenizer.from_pretrained(
-                location, use_fast=False, **std_kwargs
-            ),
-            lambda: AutoTokenizer.from_pretrained(location, **std_kwargs),
-            # Attempt more basic GPT2 Tokenizer
-            lambda: GPT2Tokenizer.from_pretrained(location, **std_kwargs),
-            # Fallback to generic LLaMA Tokenizer
-            lambda: LlamaTokenizer.from_pretrained("KoboldAI/llama2-tokenizer", use_fast=False, **std_kwargs),
-        ]
-
-        for i, try_get_tokenizer in enumerate(suppliers):
-            try:
-                return GenericTokenizer(try_get_tokenizer())
-            except Exception as e:
-                logger.warning(f"Tokenizer falling back due to {e} (This can be normal behavior for some architectures that lack a slow tokenizer such as NeoX)")
-                # If we error on each attempt, raise the last one
-                if i == len(suppliers) - 1:
-                    raise
+        return tiktoken
 
     def core_generate(
         self,
@@ -286,28 +194,8 @@ class InferenceModel:
             RuntimeError: if inconsistancies are detected with the internal state and core stopper -- sanity check
         """
 
+        gen_in = text
         start_time = time.time()
-        gen_in = torch.tensor(text, dtype=torch.long)[None]
-        logger.debug(
-            "core_generate: torch.tensor time {}s".format(time.time() - start_time)
-        )
-
-        start_time = time.time()
-        if utils.koboldai_vars.is_model_torch():
-            # Torch stuff
-            if utils.koboldai_vars.sp is not None:
-                assert self.capabilties.embedding_manipulation
-                soft_tokens = torch.arange(
-                    self.model.config.vocab_size,
-                    self.model.config.vocab_size + utils.koboldai_vars.sp.shape[0],
-                )
-                gen_in = torch.cat((soft_tokens[None], gen_in), dim=-1)
-
-        logger.debug(
-            "core_generate: Model Setup (SP, etc) time {}s".format(
-                time.time() - start_time
-            )
-        )
 
         if (
             gen_in.shape[-1] + utils.koboldai_vars.genamt
@@ -328,192 +216,146 @@ class InferenceModel:
         )
 
         start_time = time.time()
-        gen_in = gen_in.to(self.get_auxilary_device())
-
-        logger.debug(
-            "core_generate: gen_in to device time {}s".format(time.time() - start_time)
-        )
-        start_time = time.time()
 
         found_entries = found_entries or set()
 
-        self.gen_state["wi_scanner_excluded_keys"] = found_entries
-
         utils.koboldai_vars._prompt = utils.koboldai_vars.prompt
 
-        with torch.no_grad():
-            already_generated = 0
-            numseqs = utils.koboldai_vars.numseqs
-            total_gens = None
+        already_generated = 0
+        numseqs = utils.koboldai_vars.numseqs
+        total_gens = None
 
-            for i in range(
-                utils.koboldai_vars.numseqs if utils.koboldai_vars.alt_multi_gen else 1
-            ):
-                while True:
-                    # The reason this is a loop is due to how Dynamic WI works. We
-                    # cannot simply add the WI to the context mid-generation, so we
-                    # stop early, and then insert WI, then continue generating. That
-                    # stopping and continuing is this loop.
+        for i in range(
+            utils.koboldai_vars.numseqs if utils.koboldai_vars.alt_multi_gen else 1
+        ):
+            while True:
+                # The reason this is a loop is due to how Dynamic WI works. We
+                # cannot simply add the WI to the context mid-generation, so we
+                # stop early, and then insert WI, then continue generating. That
+                # stopping and continuing is this loop.
 
-                    start_time = time.time()
-                    result = self.raw_generate(
-                        gen_in[0],
-                        max_new=utils.koboldai_vars.genamt,
-                        do_streaming=utils.koboldai_vars.output_streaming,
-                        do_dynamic_wi=utils.koboldai_vars.dynamicscan,
-                        batch_count=numseqs
-                        if not utils.koboldai_vars.alt_multi_gen
-                        else 1,
-                        # Real max length is handled by CoreStopper.
-                        bypass_hf_maxlength=utils.koboldai_vars.dynamicscan,
-                        is_core=True,
-                        tpu_dynamic_inference=utils.koboldai_vars.dynamicscan
-                        or (
-                            not utils.koboldai_vars.nogenmod
-                            and utils.koboldai_vars.has_genmod
-                        ),
-                        seed=utils.koboldai_vars.seed
-                        if utils.koboldai_vars.full_determinism
-                        else None,
-                        gen_mode=gen_mode
+                start_time = time.time()
+                result = self.raw_generate(
+                    gen_in[0],
+                    max_new=utils.koboldai_vars.genamt,
+                    do_streaming=utils.koboldai_vars.output_streaming,
+                    do_dynamic_wi=utils.koboldai_vars.dynamicscan,
+                    batch_count=numseqs
+                    if not utils.koboldai_vars.alt_multi_gen
+                    else 1,
+                    # Real max length is handled by CoreStopper.
+                    bypass_hf_maxlength=utils.koboldai_vars.dynamicscan,
+                    is_core=True,
+                    tpu_dynamic_inference=utils.koboldai_vars.dynamicscan
+                    or (
+                        not utils.koboldai_vars.nogenmod
+                        and utils.koboldai_vars.has_genmod
+                    ),
+                    seed=utils.koboldai_vars.seed
+                    if utils.koboldai_vars.full_determinism
+                    else None,
+                    gen_mode=gen_mode
+                )
+                logger.debug(
+                    "core_generate: run raw_generate pass {} {}s".format(
+                        already_generated, time.time() - start_time
                     )
-                    logger.debug(
-                        "core_generate: run raw_generate pass {} {}s".format(
-                            already_generated, time.time() - start_time
+                )
+
+                genout = result.encoded
+
+                already_generated += len(genout[0])
+
+                try:
+                    assert (
+                        already_generated
+                        <= utils.koboldai_vars.genamt * utils.koboldai_vars.numseqs
+                        if utils.koboldai_vars.alt_multi_gen
+                        else 1
+                    )
+                except AssertionError:
+                    print("AlreadyGenerated", already_generated)
+                    print("genamt", utils.koboldai_vars.genamt)
+                    raise
+
+                if result.is_whole_generation:
+                    break
+
+                # Generation stopped; why?
+                # If we have been told to halt, we have reached our target token
+                # amount (controlled by halt), or Dynamic WI has not told us to
+                # stop temporarily to insert WI, we can assume that we are done
+                # generating. We shall break.
+                if self.gen_state.get("halt") or not self.gen_state.get(
+                    "regeneration_required"
+                ):
+                    break
+
+                # Now we are doing stuff for Dynamic WI.
+                assert genout.ndim >= 2
+                assert genout.shape[0] == utils.koboldai_vars.numseqs
+
+                if already_generated != utils.koboldai_vars.generated_tkns:
+                    print("already_generated: {}".format(already_generated))
+                    print(
+                        "generated_tkns: {}".format(
+                            utils.koboldai_vars.generated_tkns
                         )
                     )
+                    raise RuntimeError("WI scanning error")
 
-                    genout = result.encoded
-
-                    already_generated += len(genout[0])
-
-                    try:
+                for r in range(utils.koboldai_vars.numseqs):
+                    for c in range(already_generated):
                         assert (
-                            already_generated
-                            <= utils.koboldai_vars.genamt * utils.koboldai_vars.numseqs
-                            if utils.koboldai_vars.alt_multi_gen
-                            else 1
-                        )
-                    except AssertionError:
-                        print("AlreadyGenerated", already_generated)
-                        print("genamt", utils.koboldai_vars.genamt)
-                        raise
-
-                    if result.is_whole_generation:
-                        break
-
-                    # Generation stopped; why?
-                    # If we have been told to halt, we have reached our target token
-                    # amount (controlled by halt), or Dynamic WI has not told us to
-                    # stop temporarily to insert WI, we can assume that we are done
-                    # generating. We shall break.
-                    if self.gen_state.get("halt") or not self.gen_state.get(
-                        "regeneration_required"
-                    ):
-                        break
-
-                    # Now we are doing stuff for Dynamic WI.
-                    assert genout.ndim >= 2
-                    assert genout.shape[0] == utils.koboldai_vars.numseqs
-
-                    if (
-                        utils.koboldai_vars.lua_koboldbridge.generated_cols
-                        and utils.koboldai_vars.generated_tkns
-                        != utils.koboldai_vars.lua_koboldbridge.generated_cols
-                    ):
-                        raise RuntimeError(
-                            f"Inconsistency detected between KoboldAI Python and Lua backends ({utils.koboldai_vars.generated_tkns} != {utils.koboldai_vars.lua_koboldbridge.generated_cols})"
-                        )
-
-                    if already_generated != utils.koboldai_vars.generated_tkns:
-                        print("already_generated: {}".format(already_generated))
-                        print(
-                            "generated_tkns: {}".format(
-                                utils.koboldai_vars.generated_tkns
-                            )
-                        )
-                        raise RuntimeError("WI scanning error")
-
-                    for r in range(utils.koboldai_vars.numseqs):
-                        for c in range(already_generated):
-                            assert (
-                                utils.koboldai_vars.lua_koboldbridge.generated[r + 1][
-                                    c + 1
-                                ]
-                                is not None
-                            )
-                            genout[r][
-                                genout.shape[-1] - already_generated + c
-                            ] = utils.koboldai_vars.lua_koboldbridge.generated[r + 1][
+                            utils.koboldai_vars.lua_koboldbridge.generated[r + 1][
                                 c + 1
                             ]
+                            is not None
+                        )
+                        genout[r][
+                            genout.shape[-1] - already_generated + c
+                        ] = utils.koboldai_vars.lua_koboldbridge.generated[r + 1][
+                            c + 1
+                        ]
 
-                    encoded = []
+                encoded = []
 
-                    for i in range(utils.koboldai_vars.numseqs):
-                        txt = utils.decodenewlines(
-                            self.tokenizer.decode(genout[i, -already_generated:])
-                        )
-                        # winfo, mem, anotetxt, _found_entries = calcsubmitbudgetheader(txt, force_use_txt=True, actions=utils.koboldai_vars.actions)
-                        # txt, _, _ = calcsubmitbudget(len(utils.koboldai_vars.actions), winfo, mem, anotetxt, utils.koboldai_vars.actions, submission=txt)
-                        txt, _, _, _found_entries = utils.koboldai_vars.calc_ai_text(
-                            submitted_text=txt, send_context=False
-                        )
-                        found_entries[i].update(_found_entries)
-                        encoded.append(
-                            torch.tensor(txt, dtype=torch.long, device=genout.device)
-                        )
-
-                    max_length = len(max(encoded, key=len))
-                    encoded = torch.stack(
-                        tuple(
-                            torch.nn.functional.pad(
-                                e,
-                                (max_length - len(e), 0),
-                                value=self.model.config.pad_token_id
-                                or self.model.config.eos_token_id,
-                            )
-                            for e in encoded
-                        )
+                for i in range(utils.koboldai_vars.numseqs):
+                    txt = utils.decodenewlines(
+                        self.tokenizer.decode(genout[i, -already_generated:])
                     )
-                    genout = torch.cat(
-                        (
-                            encoded,
-                            genout[..., -already_generated:],
-                        ),
-                        dim=-1,
+                    # winfo, mem, anotetxt, _found_entries = calcsubmitbudgetheader(txt, force_use_txt=True, actions=utils.koboldai_vars.actions)
+                    # txt, _, _ = calcsubmitbudget(len(utils.koboldai_vars.actions), winfo, mem, anotetxt, utils.koboldai_vars.actions, submission=txt)
+                    txt, _, _, _found_entries = utils.koboldai_vars.calc_ai_text(
+                        submitted_text=txt, send_context=False
+                    )
+                    found_entries[i].update(_found_entries)
+                    encoded.append(
+                        txt
                     )
 
-                    if utils.koboldai_vars.sp is not None:
-                        soft_tokens = torch.arange(
-                            self.model.config.vocab_size,
-                            self.model.config.vocab_size
-                            + utils.koboldai_vars.sp.shape[0],
-                            device=genout.device,
-                        )
-                        genout = torch.cat(
-                            (soft_tokens.tile(utils.koboldai_vars.numseqs, 1), genout),
-                            dim=-1,
-                        )
+                max_length = len(max(encoded, key=len))
+                genout = encoded + genout[..., -already_generated:]
 
-                    assert (
-                        genout.shape[-1]
-                        + utils.koboldai_vars.genamt
-                        - already_generated
-                        <= utils.koboldai_vars.max_length
-                    )
-                    gen_in = genout
-                    numseqs = 1
-                if total_gens is None:
-                    total_gens = genout
-                else:
-                    total_gens = torch.cat((total_gens, genout))
+
+                assert (
+                    genout.shape[-1]
+                    + utils.koboldai_vars.genamt
+                    - already_generated
+                    <= utils.koboldai_vars.max_length
+                )
+                gen_in = genout
+                numseqs = 1
+            if total_gens is None:
+                total_gens = genout
+            else:
+                total_gens =total_gens + genout
 
         return total_gens, already_generated
 
     def _raw_generate(
         self,
-        prompt_tokens: Union[List[int], torch.Tensor],
+        prompt_tokens: Union[List[int]],
         max_new: int,
         gen_settings: GenerationSettings,
         single_line: bool = False,
@@ -614,9 +456,7 @@ class InferenceModel:
         utils.koboldai_vars.inference_config.do_core = is_core
         gen_settings = GenerationSettings(*(generation_settings or {}))
 
-        if isinstance(prompt, torch.Tensor):
-            prompt_tokens = prompt.cpu().numpy()
-        elif isinstance(prompt, list):
+        if isinstance(prompt, list):
             prompt_tokens = np.array(prompt)
         elif isinstance(prompt, str):
             prompt_tokens = np.array(self.tokenizer.encode(prompt))
@@ -659,18 +499,15 @@ class InferenceModel:
 
     def generate(
         self,
-        prompt_tokens: Union[List[int], torch.Tensor],
+        prompt_tokens: Union[List[int]],
         max_new_tokens: int,
         do_streaming: bool = False,
         do_dynamic_wi: bool = False,
         single_line: bool = False,
         batch_count: int = 1,
-    ) -> torch.Tensor:
+    ):
         raise NotImplementedError
 
-    def _post_token_gen(self, input_ids: torch.LongTensor) -> None:
-        for hook in self.post_token_hooks:
-            hook(self, input_ids)
 
     def abort_generation(self, abort=True):
         self.abort=abort

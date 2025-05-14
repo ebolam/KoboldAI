@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import time
 import json
-import torch
 import requests
 import numpy as np
 from typing import List, Optional, Union
@@ -20,6 +19,19 @@ from modeling.inference_model import (
 
 model_backend_name = "KoboldAI API"
 model_backend_type = "KoboldAI API" #This should be a generic name in case multiple model backends are compatible (think Hugging Face Custom and Basic Hugging Face)
+
+import nltk
+class simpleTokenizer:
+    def __init__(self):
+        nltk.download('punkt_tab')
+        self._koboldai_header = []
+    def encode(self, text):
+        return nltk.word_tokenize(text)
+    def decode(self, text):
+        return nltk.tokenize.treebank.TreebankWordDetokenizer().detokenize([str(x) for x in text])
+    def get_vocab(self):
+        return {}
+
 
 class APIException(Exception):
     """To be used for errors when using the Kobold API as an interface."""
@@ -57,9 +69,16 @@ class model_backend(InferenceModel):
         self.base_url = parameters['base_url'].rstrip("/")
 
     def _load(self, save_model: bool, initial_load: bool) -> None:
-        tokenizer_id = requests.get(f"{self.base_url}/api/v1/model").json()["result"]
-
-        self.tokenizer = self._get_tokenizer(tokenizer_id)
+        #tokenizer_id = requests.get(f"{self.base_url}/api/v1/model").json()["result"]
+        
+        try:
+            import tiktoken
+            self.tokenizer = tiktoken
+            self.tokenizer._koboldai_header = []
+        except:
+            self.tokenizer = simpleTokenizer()
+            
+            self.model = "API"
 
         # Do not allow API to be served over the API
         self.capabilties = ModelCapabilities(api_host=False)
@@ -70,7 +89,7 @@ class model_backend(InferenceModel):
 
     def _raw_generate(
         self,
-        prompt_tokens: Union[List[int], torch.Tensor],
+        prompt_tokens: List[int],
         max_new: int,
         gen_settings: GenerationSettings,
         single_line: bool = False,

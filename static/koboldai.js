@@ -1057,10 +1057,14 @@ function hide_show_prompt() {
 	}
 }
 
+var koboldai_vars = {}
 function var_changed(data) {
 	//if (data.name == "sp") {
 	//	console.log({"name": data.name, "data": data});
 	//}
+
+    //Let's save all of our data into the browser so we can run it offline if desired
+    koboldai_vars[data.classname + "." + data.name] = data.value;
 
 	for (const entry of sync_hooks) {
 		if (data.classname !== entry.class) continue;

@@ -1,14 +1,27 @@
 from typing import Any, List, Union
-from tokenizers import Tokenizer
-import torch
-from transformers import PreTrainedTokenizer
 
+class simpleTokenizer:
+    def __init__(self):
+        import nltk
+        nltk.download('punkt_tab')
+        self._koboldai_header = []
+    def encode(self, text):
+        return nltk.word_tokenize(text)
+    def decode(self, text):
+        return nltk.tokenize.treebank.TreebankWordDetokenizer().detokenize([str(x) for x in text])
+    def get_vocab(self):
+        return {}
 
 class GenericTokenizer:
     """Bridges the gap between Transformers tokenizers and Tokenizers tokenizers. Why they aren't the same, I don't know."""
 
-    def __init__(self, tokenizer: Union[Tokenizer, PreTrainedTokenizer]) -> None:
-        self.tokenizer = tokenizer
+    def __init__(self, tokenizer) -> None:
+        try:
+            import tiktoken
+            self.tokenizer = tiktoken
+            self.tokenizer._koboldai_header = []
+        except:
+            self.tokenizer = simpleTokenizer()
         try:
             self.valid_tokens = set(self.tokenizer.vocab.values())
         except AttributeError:
@@ -31,7 +44,7 @@ class GenericTokenizer:
             return ret
         return ret.ids
 
-    def decode(self, tokens: Union[int, List[int], torch.Tensor]) -> str:
+    def decode(self, tokens) -> str:
         if isinstance(tokens, torch.Tensor):
             tokens = tokens.cpu().tolist()
 

@@ -11,7 +11,6 @@ from flask_socketio import join_room, leave_room
 from collections import OrderedDict
 import multiprocessing
 from logger import logger
-import torch
 import numpy as np
 import random
 import inspect
@@ -65,31 +64,31 @@ def process_variable_changes(socketio, classname, name, value, old_value, debug_
                 if not has_request_context():
                     if queue is not None:
                         #logger.debug("Had to use queue")
-                        queue.put(["var_changed", {"classname": "actions", "name": "Action Count", "old_value": None, "value":value.action_count, "transmit_time": transmit_time}, {"broadcast":True, "room":room}])
+                        queue.put(["var_changed", {"classname": "actions", "name": "Action Count", "old_value": None, "value":value.action_count, "transmit_time": transmit_time}, {"room":room}])
                         
                         data_to_send = []
                         for i in list(value.actions)[-100:]:
                             data_to_send.append({"id": i, "action": value.actions[i]})
-                        queue.put(["var_changed", {"classname": "story", "name": "actions", "old_value": None, "value":data_to_send, "transmit_time": transmit_time}, {"broadcast":True, "room":room}])
+                        queue.put(["var_changed", {"classname": "story", "name": "actions", "old_value": None, "value":data_to_send, "transmit_time": transmit_time}, {"room":room}])
                 
                 else:
                     if socketio is not None:
-                        socketio.emit("var_changed", {"classname": "actions", "name": "Action Count", "old_value": None, "value":value.action_count, "transmit_time": transmit_time}, broadcast=True, room=room)
+                        socketio.emit("var_changed", {"classname": "actions", "name": "Action Count", "old_value": None, "value":value.action_count, "transmit_time": transmit_time}, room=room)
                     
                     data_to_send = []
                     for i in list(value.actions)[-100:]:
                         data_to_send.append({"id": i, "action": value.actions[i]})
                     if socketio is not None:
-                        socketio.emit("var_changed", {"classname": "story", "name": "actions", "old_value": None, "value": data_to_send, "transmit_time": transmit_time}, broadcast=True, room=room)
+                        socketio.emit("var_changed", {"classname": "story", "name": "actions", "old_value": None, "value": data_to_send, "transmit_time": transmit_time}, room=room)
             elif isinstance(value, KoboldWorldInfo):
                 value.send_to_ui()
             else:
                 #If we got a variable change from a thread other than what the app is run it, eventlet seems to block and no further messages are sent. Instead, we'll rely the message to the app and have the main thread send it
                 if not has_request_context():
                     if not koboldai_vars_main.host or name not in password_vars:
-                        data = ["var_changed", {"classname": classname, "name": name, "old_value": clean_var_for_emit(old_value), "value": clean_var_for_emit(value), "transmit_time": transmit_time}, {"include_self":True, "broadcast":True, "room":room}]
+                        data = ["var_changed", {"classname": classname, "name": name, "old_value": clean_var_for_emit(old_value), "value": clean_var_for_emit(value), "transmit_time": transmit_time}, {"include_self":True, "room":room}]
                     else:
-                        data = ["var_changed", {"classname": classname, "name": name, "old_value": "*" * len(old_value) if old_value is not None else "", "value": "*" * len(value) if value is not None else "", "transmit_time": transmit_time}, {"include_self":True, "broadcast":True, "room":room}]
+                        data = ["var_changed", {"classname": classname, "name": name, "old_value": "*" * len(old_value) if old_value is not None else "", "value": "*" * len(value) if value is not None else "", "transmit_time": transmit_time}, {"include_self":True, "room":room}]
                     if queue is not None:
                         #logger.debug("Had to use queue")
                         queue.put(data)
@@ -97,9 +96,9 @@ def process_variable_changes(socketio, classname, name, value, old_value, debug_
                 else:
                     if socketio is not None:
                         if not koboldai_vars_main.host or name not in password_vars:
-                            socketio.emit("var_changed", {"classname": classname, "name": name, "old_value": clean_var_for_emit(old_value), "value": clean_var_for_emit(value), "transmit_time": transmit_time}, include_self=True, broadcast=True, room=room)
+                            socketio.emit("var_changed", {"classname": classname, "name": name, "old_value": clean_var_for_emit(old_value), "value": clean_var_for_emit(value), "transmit_time": transmit_time}, include_self=True, room=room)
                         else:
-                            socketio.emit("var_changed", {"classname": classname, "name": name, "old_value":  "*" * len(old_value) if old_value is not None else "", "value": "*" * len(value) if value is not None else "", "transmit_time": transmit_time}, include_self=True, broadcast=True, room=room)
+                            socketio.emit("var_changed", {"classname": classname, "name": name, "old_value":  "*" * len(old_value) if old_value is not None else "", "value": "*" * len(value) if value is not None else "", "transmit_time": transmit_time}, include_self=True, room=room)
 
 def basic_send(socketio, classname, event, data):
     #Get which room we'll send the messages to
@@ -118,10 +117,10 @@ def basic_send(socketio, classname, event, data):
     if not has_request_context():
         if queue is not None:
             #logger.debug("Had to use queue")
-            queue.put([event, data, {"broadcast":True, "room":room}])
+            queue.put([event, data, {"room":room}])
     else:
         if socketio is not None:
-            socketio.emit(event, data, include_self=True, broadcast=True, room=room)
+            socketio.emit(event, data, include_self=True, room=room)
 
 class koboldai_vars(object):
     def __init__(self, socketio):
@@ -171,7 +170,7 @@ class koboldai_vars(object):
 
         session['story'] = story_name
         logger.debug("Sending story reset")
-        self._story_settings[story_name]._socketio.emit("reset_story", {}, broadcast=True, room=story_name)
+        self._story_settings[story_name]._socketio.emit("reset_story", {}, room=story_name)
         if story_name in self._story_settings:
             self._story_settings[story_name].no_save = True
             self._story_settings[story_name].worldinfo_v2.reset()
@@ -217,7 +216,7 @@ class koboldai_vars(object):
             join_room(story_name)
             session['story'] = story_name
             logger.debug("Sending story reset")
-            self._story_settings[story_name]._socketio.emit("reset_story", {}, broadcast=True, room=story_name)
+            self._story_settings[story_name]._socketio.emit("reset_story", {}, room=story_name)
             self._story_settings[story_name].send_to_ui()
         session['story'] = story_name
         
@@ -568,13 +567,7 @@ class koboldai_vars(object):
         return tokens, used_tokens, used_tokens+self.genamt, set(used_world_info)
     
     def is_model_torch(self) -> bool:
-        if self.use_colab_tpu:
-            return False
-
-        if self.model in ["Colab", "API", "CLUSTER", "ReadOnly", "OAI"]:
-            return False
-
-        return True
+        return False
     
     def assign_world_info_to_actions(self, *args, **kwargs):
         self._story_settings[self.get_story_name()].assign_world_info_to_actions(*args, **kwargs)
@@ -711,7 +704,7 @@ class model_settings(settings):
         self.enable_whitelist = False
         self._socketio = socketio
         self.reset_for_model_load()
-        self.model       = ""     # Model ID string chosen at startup
+        self.model       = "ReadOnly"     # Model ID string chosen at startup
         self.model_type  = ""     # Model Type (Automatically taken from the model config)
         self.modelconfig = {}     # Raw contents of the model's config.json, or empty dictionary if none found
         self.custmodpth  = ""     # Filesystem location of custom model to run
@@ -1067,7 +1060,7 @@ class story_settings(settings):
     
     def reset(self):
         self.no_save = True
-        self._socketio.emit("reset_story", {}, broadcast=True, room="UI_2")
+        self._socketio.emit("reset_story", {},room="UI_2")
         self.__init__(self._socketio, self._koboldai_vars, tokenizer=self.tokenizer)
         self.no_save = False
       
@@ -1312,7 +1305,7 @@ class system_settings(settings):
         self.corescript  = "default.lua"  # Filename of corescript to load
         self.gpu_device  = 0      # Which PyTorch device to use when using pure GPU generation
         self.savedir     = os.getcwd()+"\\stories"
-        self.hascuda     = torch.cuda.is_available()  # Whether torch has detected CUDA on the system
+        self.hascuda     = False  # Whether torch has detected CUDA on the system
         self.usegpu      = False  # Whether to launch pipeline with GPU support
         self.splist      = []
         self.spselect    = ""     # Temporary storage for soft prompt filename to load
@@ -1410,7 +1403,7 @@ class system_settings(settings):
             
             #for original UI
             if name == 'sp_changed':
-                self._socketio.emit('from_server', {'cmd': 'spstatitems', 'data': {self.spfilename: self.spmeta} if self.allowsp and len(self.spfilename) else {}}, namespace=None, broadcast=True, room="UI_1")
+                self._socketio.emit('from_server', {'cmd': 'spstatitems', 'data': {self.spfilename: self.spmeta} if self.allowsp and len(self.spfilename) else {}}, namespace=None, room="UI_1")
                 super().__setattr__("sp_changed", False)
             
             if name == 'keep_img_gen_in_memory' and value == False:
@@ -1485,6 +1478,11 @@ class KoboldStoryRegister(object):
         self.audio_status = {}
         for item in sequence:
             self.append(item)
+        if importlib.util.find_spec("torch") is None:
+            self.no_torch = True
+            logger.info("Disabling tts as torch is not installed")
+        else:
+            self.no_torch = False
     
     def reset(self, sequence=[]):
         self.__init__(self._socketio, self.story_settings, self._koboldai_vars, sequence=sequence)
@@ -1876,7 +1874,7 @@ class KoboldStoryRegister(object):
                 #If this is the current spot in the story, advance
                 if action_step-1 == self.action_count:
                     self.action_count+=1
-                    self._socketio.emit("var_changed", {"classname": "actions", "name": "Action Count", "old_value": None, "value":self.action_count, "transmit_time": str(datetime.datetime.now())}, broadcast=True, room="UI_2")
+                    self._socketio.emit("var_changed", {"classname": "actions", "name": "Action Count", "old_value": None, "value":self.action_count, "transmit_time": str(datetime.datetime.now())}, room="UI_2")
                 self.story_settings.assign_world_info_to_actions(action_id=action_step, no_transmit=True)
                 self.clear_unused_options(pointer=action_step)
                 #process_variable_changes(self._socketio, "story", 'actions', {"id": action_step, 'action':  self.actions[action_step]}, None)
@@ -1902,7 +1900,7 @@ class KoboldStoryRegister(object):
     ) -> None:
         if self._koboldai_vars.aibusy and not force:
             return
-        self._socketio.emit("show_options", should_show, broadcast=True, room="UI_2")
+        self._socketio.emit("show_options", should_show, room="UI_2")
     
     def delete_action(self, action_id, keep=True):
         if action_id in self.actions:
@@ -1996,7 +1994,7 @@ class KoboldStoryRegister(object):
                     process_variable_changes(self._socketio, "story", 'actions', {"id": self.action_count+1, 'action':  self.actions[self.action_count+1]}, None)
         else:
             #We're streaming single options so our output is our selected
-            queue.put(["stream_tokens", text_list, {"broadcast": True, "room": "UI_2"}])
+            queue.put(["stream_tokens", text_list, {"room": "UI_2"}])
 
             # UI1
             queue.put([
@@ -2007,7 +2005,7 @@ class KoboldStoryRegister(object):
                         "probabilities": self.probability_buffer
                     }],
                 },
-                {"broadcast":True, "room": "UI_1"}
+                {"room": "UI_1"}
             ])
     
     def set_probabilities(self, probabilities, action_id=None):
@@ -2132,6 +2130,9 @@ class KoboldStoryRegister(object):
         return action_text_split
     
     def gen_audio(self, action_id=None, overwrite=True):
+        if self.no_torch:
+            return
+        import torch
         if action_id is None:
             action_id = self.action_count
         if overwrite:
@@ -2178,7 +2179,7 @@ class KoboldStoryRegister(object):
                 if action_id != -1:
                     self.actions[action_id]["audio_gen"] = 2
                     basic_send(self._socketio, "story", "set_audio_status", {"id": action_id, "action": self.actions[action_id]})
-                    
+                                        
                 
     def create_wave(self, make_audio_queue):
         import pydub
@@ -2403,7 +2404,7 @@ class KoboldWorldInfo(object):
         self.story_settings.gamesaved = False
         self.sync_world_info_to_old_format()
         if self._socketio is not None:
-            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, broadcast=True, room="UI_2")
+            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, room="UI_2")
         
     def delete_folder(self, folder):
         keys = [key for key in self.world_info]
@@ -2414,8 +2415,8 @@ class KoboldWorldInfo(object):
             del self.world_info_folder[folder]
         self.sync_world_info_to_old_format()
         if self._socketio is not None:
-            self._socketio.emit("delete_world_info_folder", folder, broadcast=True, room="UI_2")
-            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, broadcast=True, room="UI_2")
+            self._socketio.emit("delete_world_info_folder", folder, room="UI_2")
+            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, room="UI_2")
         logger.debug("Calcing AI Text from WI Folder Delete")
         ignore = self._koboldai_vars.calc_ai_text()
         
@@ -2441,7 +2442,7 @@ class KoboldWorldInfo(object):
             self.story_settings.gamesaved = False
             self.sync_world_info_to_old_format()
         if self._socketio is not None:
-            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, broadcast=True, room="UI_2")
+            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, room="UI_2")
                 
     def add_item(self, title, key, keysecondary, folder, constant, manual_text,
                  comment, wi_type="wi", use_wpp=False,
@@ -2515,8 +2516,8 @@ class KoboldWorldInfo(object):
         self.story_settings.assign_world_info_to_actions(wuid=uid)
         
         if self._socketio is not None and send_to_ui:
-            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, broadcast=True, room="UI_2")
-            self._socketio.emit("world_info_entry", self.world_info[uid], broadcast=True, room="UI_2")
+            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, room="UI_2")
+            self._socketio.emit("world_info_entry", self.world_info[uid], room="UI_2")
         if recalc:
             logger.debug("Calcing AI Text from WI Add")
             ignore = self._koboldai_vars.calc_ai_text()
@@ -2588,8 +2589,8 @@ class KoboldWorldInfo(object):
         ignore = self._koboldai_vars.calc_ai_text()
         
         if self._socketio is not None:
-            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, broadcast=True, room="UI_2")
-            self._socketio.emit("world_info_entry", self.world_info[uid], broadcast=True, room="UI_2")
+            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, room="UI_2")
+            self._socketio.emit("world_info_entry", self.world_info[uid], room="UI_2")
         
     def delete(self, uid):
         del self.world_info[uid]
@@ -2607,8 +2608,8 @@ class KoboldWorldInfo(object):
         self.story_settings.gamesaved = False
         self.sync_world_info_to_old_format()
         if self._socketio is not None:
-            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, broadcast=True, room="UI_2")
-            self._socketio.emit("delete_world_info_entry", uid, broadcast=True, room="UI_2")
+            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, room="UI_2")
+            self._socketio.emit("delete_world_info_entry", uid, room="UI_2")
         logger.debug("Calcing AI Text from WI Delete")
         ignore = self._koboldai_vars.calc_ai_text()
     
@@ -2639,7 +2640,7 @@ class KoboldWorldInfo(object):
         self.story_settings.gamesaved = False
         self.sync_world_info_to_old_format()
         if self._socketio is not None:
-            self._socketio.emit("delete_world_info_folder", old_folder, broadcast=True, room="UI_2")
+            self._socketio.emit("delete_world_info_folder", old_folder, room="UI_2")
             self.send_to_ui()
     
     def reorder(self, uid, before):
@@ -2648,9 +2649,9 @@ class KoboldWorldInfo(object):
     
     def send_to_ui(self):
         if self._socketio is not None:
-            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, broadcast=True, room="UI_2")
+            self._socketio.emit("world_info_folder", {x: self.world_info_folder[x] for x in self.world_info_folder}, room="UI_2")
             logger.debug("Sending all world info from send_to_ui")
-            self._socketio.emit("world_info_entry", [self.world_info[uid] for uid in self.world_info], broadcast=True, room="UI_2")
+            self._socketio.emit("world_info_entry", [self.world_info[uid] for uid in self.world_info], room="UI_2")
     
     def to_json(self, folder=None):
         if folder is None:
@@ -2780,7 +2781,7 @@ class KoboldWorldInfo(object):
             if self.world_info[key]["used_in_game"] != self.world_info[key]["constant"]:
                 self.world_info[key]["used_in_game"] = self.world_info[key]["constant"]
                 if self._socketio is not None:
-                    self._socketio.emit("world_info_entry_used_in_game", {"uid": key, "used_in_game": False}, broadcast=True, room="UI_2")
+                    self._socketio.emit("world_info_entry_used_in_game", {"uid": key, "used_in_game": False}, room="UI_2")
         
     def set_world_info_used(self, uid):
         if uid in self.world_info:
@@ -2788,7 +2789,7 @@ class KoboldWorldInfo(object):
         else:
             logger.warning("Something tried to set world info UID {} to in game, but it doesn't exist".format(uid))
         if self._socketio is not None:
-            self._socketio.emit("world_info_entry_used_in_game", {"uid": uid, "used_in_game": True}, broadcast=True, room="UI_2")
+            self._socketio.emit("world_info_entry_used_in_game", {"uid": uid, "used_in_game": True}, room="UI_2")
     
     def get_used_wi(self):
         return [x['content'] for x in self.world_info if x['used_in_game']]

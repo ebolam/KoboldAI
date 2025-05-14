@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import torch
 import numpy as np
 from typing import List, Optional, Union
 
@@ -69,7 +68,7 @@ class model_backend(InferenceModel):
 
     def _raw_generate(
         self,
-        prompt_tokens: Union[List[int], torch.Tensor],
+        prompt_tokens,
         max_new: int,
         gen_settings: GenerationSettings,
         single_line: bool = False,
