@@ -197,8 +197,9 @@ class InferenceModel:
         gen_in = text
         start_time = time.time()
 
+
         if (
-            gen_in.shape[-1] + utils.koboldai_vars.genamt
+            len(gen_in) + utils.koboldai_vars.genamt
             > utils.koboldai_vars.max_length
         ):
             logger.error("gen_in.shape[-1]: {}".format(gen_in.shape[-1]))
@@ -211,7 +212,7 @@ class InferenceModel:
                 )
             )
         assert (
-            gen_in.shape[-1] + utils.koboldai_vars.genamt
+            len(gen_in) + utils.koboldai_vars.genamt
             <= utils.koboldai_vars.max_length
         )
 
@@ -236,7 +237,7 @@ class InferenceModel:
 
                 start_time = time.time()
                 result = self.raw_generate(
-                    gen_in[0],
+                    gen_in,
                     max_new=utils.koboldai_vars.genamt,
                     do_streaming=utils.koboldai_vars.output_streaming,
                     do_dynamic_wi=utils.koboldai_vars.dynamicscan,
@@ -261,7 +262,7 @@ class InferenceModel:
                         already_generated, time.time() - start_time
                     )
                 )
-
+                
                 genout = result.encoded
 
                 already_generated += len(genout[0])
@@ -304,20 +305,6 @@ class InferenceModel:
                     )
                     raise RuntimeError("WI scanning error")
 
-                for r in range(utils.koboldai_vars.numseqs):
-                    for c in range(already_generated):
-                        assert (
-                            utils.koboldai_vars.lua_koboldbridge.generated[r + 1][
-                                c + 1
-                            ]
-                            is not None
-                        )
-                        genout[r][
-                            genout.shape[-1] - already_generated + c
-                        ] = utils.koboldai_vars.lua_koboldbridge.generated[r + 1][
-                            c + 1
-                        ]
-
                 encoded = []
 
                 for i in range(utils.koboldai_vars.numseqs):
@@ -350,7 +337,7 @@ class InferenceModel:
                 total_gens = genout
             else:
                 total_gens =total_gens + genout
-
+            
         return total_gens, already_generated
 
     def _raw_generate(
@@ -451,7 +438,7 @@ class InferenceModel:
         elif gen_mode == GenerationMode.UNTIL_SENTENCE_END:
             temp_stoppers.append(Stoppers.sentence_end_stopper)
 
-        self.stopper_hooks += temp_stoppers
+        #self.stopper_hooks += temp_stoppers
 
         utils.koboldai_vars.inference_config.do_core = is_core
         gen_settings = GenerationSettings(*(generation_settings or {}))
@@ -468,16 +455,16 @@ class InferenceModel:
 
         time_start = time.time()
 
-        with use_core_manipulations():
-            result = self._raw_generate(
-                prompt_tokens=prompt_tokens,
-                max_new=max_new,
-                batch_count=batch_count,
-                gen_settings=gen_settings,
-                single_line=single_line,
-                tpu_dynamic_inference=tpu_dynamic_inference,
-                seed=seed,
-            )
+        #with use_core_manipulations():
+        result = self._raw_generate(
+            prompt_tokens=prompt_tokens,
+            max_new=max_new,
+            batch_count=batch_count,
+            gen_settings=gen_settings,
+            single_line=single_line,
+            tpu_dynamic_inference=tpu_dynamic_inference,
+            seed=seed,
+        )
 
         time_end = round(time.time() - time_start, 2)
 

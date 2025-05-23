@@ -52,6 +52,9 @@ import gc
 import traceback
 import ijson
 
+import nltk
+nltk.download('punkt_tab')
+
 from ansi2html import Ansi2HTMLConverter
 
 # Hack to make the new Horde worker understand its imports...
@@ -2291,40 +2294,7 @@ def actionsubmit(
     while(True):
         set_aibusy(1)
         koboldai_vars.actions.clear_unused_options()
-        if(koboldai_vars.model in ["API","CLUSTER"]):
-            global tokenizer
-            if koboldai_vars.model == "API":
-                tokenizer_id = requests.get(
-                    koboldai_vars.colaburl[:-8] + "/api/v1/model",
-                ).json()["result"]
-            elif len(koboldai_vars.cluster_requested_models) >= 1:
-                # If the player has requested one or more models, we use the first one for the tokenizer
-                tokenizer_id = koboldai_vars.cluster_requested_models[0]
-            # The cluster can return any number of possible models for each gen, but this happens after this step
-            # So at this point, this is unknown
-            else:
-                tokenizer_id = ""
-            if tokenizer_id != koboldai_vars.api_tokenizer_id:
-                try:
-                    if(os.path.isdir(tokenizer_id)):
-                        try:
-                            tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, revision=koboldai_vars.revision, cache_dir="cache", use_fast=False)
-                        except:
-                            tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, revision=koboldai_vars.revision, cache_dir="cache")
-                    elif(os.path.isdir("models/{}".format(tokenizer_id.replace('/', '_')))):
-                        try:
-                            tokenizer = AutoTokenizer.from_pretrained("models/{}".format(tokenizer_id.replace('/', '_')), revision=koboldai_vars.revision, cache_dir="cache", use_fast=False)
-                        except:
-                            tokenizer = AutoTokenizer.from_pretrained("models/{}".format(tokenizer_id.replace('/', '_')), revision=koboldai_vars.revision, cache_dir="cache")
-                    else:
-                        try:
-                            tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, revision=koboldai_vars.revision, cache_dir="cache", use_fast=False)
-                        except:
-                            tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, revision=koboldai_vars.revision, cache_dir="cache")
-                except:
-                    logger.warning(f"Unknown tokenizer {repr(tokenizer_id)}")
-                koboldai_vars.api_tokenizer_id = tokenizer_id
-
+        
         if(disable_recentrng):
             koboldai_vars.recentrng = koboldai_vars.recentrngm = None
 
@@ -2411,6 +2381,7 @@ def actionsubmit(
             if(not no_generate and not koboldai_vars.noai):
                 # Off to the tokenizer!
                 tts_text = calcsubmit("", gen_mode=gen_mode)
+                break
     return tts_text
 
 def apiactionsubmit_generate(txt, minimum, maximum):
@@ -2623,9 +2594,25 @@ def calcsubmitbudget(actionlen, winfo, mem, anotetxt, actions, submission=None, 
     lnsp = koboldai_vars.sp_length
 
     if("tokenizer" not in globals()):
-        from transformers import GPT2Tokenizer
         global tokenizer
-        tokenizer = GPT2Tokenizer.from_pretrained("gpt2", revision=koboldai_vars.revision, cache_dir="cache")
+        class simpleTokenizer:
+            def __init__(self):
+                nltk.download('punkt_tab')
+                self._koboldai_header = []
+            def encode(self, text):
+                return nltk.word_tokenize(text)
+            def decode(self, text):
+                return nltk.tokenize.treebank.TreebankWordDetokenizer().detokenize([str(x) for x in text])
+            def get_vocab(self):
+                return {}
+            def __call__(self, text):
+                return {'input_ids': self.encode(text), 'attention_mask': [1 for x in self.encode(text)]}
+        
+        try:
+            import tiktoken
+            tokenizer = tiktoken.get_encoding("o200k_base")
+        except:
+            tokenizer = simpleTokenizer()
 
     lnheader = len(tokenizer._koboldai_header)
 
@@ -2745,35 +2732,9 @@ def calcsubmit(txt, gen_mode=GenerationMode.STANDARD):
         logger.debug("Submit: get_text time {}s".format(time.time()-start_time))
 
         start_time = time.time()
-        if koboldai_vars.experimental_features and any([c.get("attention_multiplier", 1) != 1 for c in koboldai_vars.context]):
-            offset = 0
-            applied_biases = []
-            for c in koboldai_vars.context:
-                length = len(c["tokens"])
-                if c.get("attention_multiplier") and c["attention_multiplier"] != 1:
-                    applied_biases.append({"start": offset, "end": offset + length, "multiplier": c.get("attention_multiplier", 1)})
-                offset += length
-
-            logger.info(f"Applied Biases: {applied_biases}")
-
-            bias = []
-            for b in applied_biases:
-                for i in range(b["start"], b["end"]):
-                    top_index = len(bias) - 1
-                    if i > top_index:
-                        bias += [1] * (i - top_index)
-                    bias[i] = b["multiplier"]
-
-            
-            device = model.get_auxilary_device()
-            attention_bias.attention_bias = torch.Tensor(bias).to(device)
-            logger.info(f"Bias by {koboldai_vars.memory_attn_bias} -- {attention_bias.attention_bias}")
-        logger.debug("Submit: experimental_features time {}s".format(time.time()-start_time))
-        
-        start_time = time.time()
         tts_text = generate(subtxt, min, max, found_entries, gen_mode=gen_mode)
         logger.debug("Submit: generate time {}s".format(time.time()-start_time))
-        attention_bias.attention_bias = None
+        #attention_bias.attention_bias = None
         return tts_text
 
                     
@@ -2861,16 +2822,12 @@ def generate(txt, minimum, maximum, found_entries=None, gen_mode=GenerationMode.
     # Store context in memory to use it for comparison with generated content
     koboldai_vars.lastctx = utils.decodenewlines(tokenizer.decode(txt))
 
-    # Clear CUDA cache if using GPU
-    if(koboldai_vars.hascuda and (koboldai_vars.usegpu or koboldai_vars.breakmodel)):
-        gc.collect()
-        torch.cuda.empty_cache()
-
     # Submit input text to generator
     start_time = time.time()
     genout, already_generated = tpool.execute(model.core_generate, txt, found_entries, gen_mode=gen_mode)
     logger.debug("Generate: core_generate time {}s".format(time.time()-start_time))
     
+    genout = [{"generated_text": utils.decodenewlines(tokenizer.decode(tokens[-already_generated:]))} for tokens in genout]
 
     if(len(genout) == 1):
         tts_text = genresult(genout[0]["generated_text"])
@@ -2908,7 +2865,7 @@ def genresult(genout, flash=True, ignore_formatting=False):
     if not koboldai_vars.quiet:
         logger.generation(genout.encode("unicode_escape").decode("utf-8"))
 
-    koboldai_vars.lua_koboldbridge.feedback = genout
+    #koboldai_vars.lua_koboldbridge.feedback = genout
 
     if(len(genout) == 0):
         return
@@ -5135,7 +5092,6 @@ def UI_2_submit(data):
         new_action_text += chr(29)
         new_action_text += "{{[OUTPUT]}}"
         
-
     text = actionsubmit(new_action_text, actionmode=koboldai_vars.actionmode, gen_mode=gen_mode)
     return text
 

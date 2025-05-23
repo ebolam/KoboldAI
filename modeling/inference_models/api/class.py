@@ -31,6 +31,8 @@ class simpleTokenizer:
         return nltk.tokenize.treebank.TreebankWordDetokenizer().detokenize([str(x) for x in text])
     def get_vocab(self):
         return {}
+    def __call__(self, text):
+        return {'input_ids': self.encode(text), 'attention_mask': [1 for x in self.encode(text)]}
 
 
 class APIException(Exception):
@@ -47,7 +49,7 @@ class model_backend(InferenceModel):
         return model_name == "API"
     
     def get_requested_parameters(self, model_name, model_path, menu_path, parameters = {}):
-        if os.path.exists("settings/api.model_backend.settings") and 'base_url' not in vars(self):
+        if os.path.exists("settings/api.model_backend.settings") and self.base_url == "":
             with open("settings/api.model_backend.settings", "r") as f:
                 self.base_url = json.load(f)['base_url']
         requested_parameters = []
@@ -63,6 +65,7 @@ class model_backend(InferenceModel):
                                         "extra_classes": "",
                                         "refresh_model_inputs": False
                                     })
+        print(requested_parameters)
         return requested_parameters
         
     def set_input_parameters(self, parameters):
@@ -73,7 +76,7 @@ class model_backend(InferenceModel):
         
         try:
             import tiktoken
-            self.tokenizer = tiktoken
+            self.tokenizer = tiktoken.get_encoding("o200k_base")
             self.tokenizer._koboldai_header = []
         except:
             self.tokenizer = simpleTokenizer()
@@ -97,7 +100,7 @@ class model_backend(InferenceModel):
         seed: Optional[int] = None,
         **kwargs,
     ):
-
+        
         if seed is not None:
             logger.warning(
                 "Seed is unsupported on the APIInferenceModel. Seed will be ignored."
@@ -126,24 +129,25 @@ class model_backend(InferenceModel):
         }
 
         # Create request
+        url = f"{self.base_url}/api/v1/generate"
         while True:
-            req = requests.post(f"{self.base_url}/api/v1/generate", json=reqdata)
-
+            req = requests.post(url, json=reqdata)
             if req.status_code == 503:
                 # Server is currently generating something else so poll until it's our turn
                 time.sleep(1)
                 continue
-
+        
             js = req.json()
             if req.status_code != 200:
                 logger.error(json.dumps(js, indent=4))
                 raise APIException(f"Bad API status code {req.status_code}")
-
+        
             genout = [obj["text"] for obj in js["results"]]
-            return GenerationResult(
+            results = GenerationResult(
                 model=self,
-                out_batches=np.array([self.tokenizer.encode(x) for x in genout]),
+                out_batches=[self.tokenizer.encode(x) for x in genout],
                 prompt=prompt_tokens,
                 is_whole_generation=True,
                 single_line=single_line,
             )
+            return results
